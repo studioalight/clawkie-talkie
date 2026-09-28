@@ -482,6 +482,16 @@ export class VoiceSession {
     this.touchActivity();
     const name = line.trim();
     if (!name) return;
+    // If no TTS turn is in flight, deliver immediately — the operator may
+    // queue the switch while idle (e.g. answering a written question about
+    // the procedure), and completeTtsTurn never fires, so the switch would
+    // sit in memory forever (field-observed on VM3 2026-09-28: D'ENT queued
+    // while idle, phone never re-homed).
+    if (!this.state.turnInFlight && this.connected && this.peer && !this.peer.destroyed) {
+      console.log(`[voice ${this.roomId}] Line switch → ${name} (idle — delivering now)`);
+      this.sendToPeer(this.peer, daemonToPhone.lineSwitch(name));
+      return;
+    }
     this.pendingLineSwitch = name;
     console.log(`[voice ${this.roomId}] Line switch queued → ${name} (after current turn)`);
   }
