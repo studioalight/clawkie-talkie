@@ -268,6 +268,19 @@ export class DaemonPeer {
     return { ok: true, applied: targets.length, gainDb: resultDb };
   }
 
+  /** Queue a line switch for after the current TTS turn (voice control
+   *  port — switchboard operator model). Raw line-name pass-through; the
+   *  phone's address book owns the lookup. */
+  requestLineSwitch(sessionId: string, line: string): { ok: boolean; applied?: number; error?: string; detail?: string } {
+    const wanted = sessionId.trim();
+    const targets = wanted ? this.sessionsFor(wanted) : [...this.voiceSessions.values()];
+    if (targets.length === 0) {
+      return { ok: false, error: 'no_client', detail: 'no active voice room' + (wanted ? ' for session ' + wanted : '') };
+    }
+    for (const session of targets) session.requestLineSwitch(line);
+    return { ok: true, applied: targets.length };
+  }
+
   /** Aggregate fan-out results: first success wins, else the first failure. */
   private combinePush(results: PushAudioResult[]): PushAudioResult {
     return results.find((r) => r.ok) ?? results[0];

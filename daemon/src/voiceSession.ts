@@ -468,6 +468,24 @@ export class VoiceSession {
   // voice_settings, so the code framework is the right (and only) layer.
   private ttsGainDb = 0;
 
+  // -- switchboard relay (phase one, 2026-09-28) --
+  // Operator model: the agent says "switch to D'ENT" → the control port sets
+  // a pending line switch DURING the reply; completeTtsTurn relays
+  // line.switch to the phone AFTER the reply finished playing, so the
+  // operator's confirmation is never cut off by its own command.
+  private pendingLineSwitch: string | null = null;
+
+  /** Queue a line switch for delivery when the current TTS turn completes.
+   *  Called by the voice control port (agent operator). Raw line name
+  *  pass-through — the phone's address book owns the lookup. */
+  requestLineSwitch(line: string): void {
+    this.touchActivity();
+    const name = line.trim();
+    if (!name) return;
+    this.pendingLineSwitch = name;
+    console.log(`[voice ${this.roomId}] Line switch queued → ${name} (after current turn)`);
+  }
+
   /** Set absolute TTS gain (dB), clamped to [-30, +12]. Returns the value
    *  actually in effect. */
   applyTtsVolume(gainDb: number): number {
@@ -1429,6 +1447,13 @@ export class VoiceSession {
     this.send(daemonToPhone.ttsDone());
     if (reason !== 'tts_audio_transport_closed' && this.connected && this.peer && !this.peer.destroyed) {
       this.drainTtsAudioReplay(this.peer);
+    }
+    // Switchboard: deliver a queued line switch now that the reply finished —
+    // the phone defers until its playback buffer drains, then re-homes.
+    if (this.pendingLineSwitch && this.connected && this.peer && !this.peer.destroyed) {
+      const line = this.pendingLineSwitch;
+      this.pendingLineSwitch = null;
+      this.sendToPeer(this.peer, daemonToPhone.lineSwitch(line));
     }
     this.tts = null;
     this.resetTurn(reason);
