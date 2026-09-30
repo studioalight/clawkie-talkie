@@ -281,6 +281,19 @@ export class DaemonPeer {
     return { ok: true, applied: targets.length };
   }
 
+  /** Session switch (same shape as requestLineSwitch): re-aim the phone at a
+   *  different session on this shore. sessionKey optional — rides the message
+   *  so the next join needs no gateway lookup. */
+  requestSessionSwitch(sessionId: string, session: string, sessionKey?: string): { ok: boolean; applied?: number; error?: string; detail?: string } {
+    const wanted = sessionId.trim();
+    const targets = wanted ? this.sessionsFor(wanted) : [...this.voiceSessions.values()];
+    if (targets.length === 0) {
+      return { ok: false, error: 'no_client', detail: 'no active voice room' + (wanted ? ' for session ' + wanted : '') };
+    }
+    for (const s of targets) s.requestSessionSwitch(session, sessionKey);
+    return { ok: true, applied: targets.length };
+  }
+
   /** Aggregate fan-out results: first success wins, else the first failure. */
   private combinePush(results: PushAudioResult[]): PushAudioResult {
     return results.find((r) => r.ok) ?? results[0];

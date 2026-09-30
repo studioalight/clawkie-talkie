@@ -279,6 +279,7 @@ export type DaemonToPhoneEvent =
   | { t: 'sessions.create.error'; requestId: string; message: string }
   | { t: 'tts.done' }
   | { t: 'line.switch'; line: string }
+  | { t: 'session.switch'; session: string; sessionKey?: string }
   | { t: 'tts.error'; message: string };
 
 export interface ControlEventRecord {
@@ -443,6 +444,8 @@ export const daemonToPhone = {
   }),
   ttsDone: (): DaemonToPhone => ({ t: 'tts.done' }),
   lineSwitch: (line: string): DaemonToPhone => ({ t: 'line.switch', line }),
+  sessionSwitch: (session: string, sessionKey?: string): DaemonToPhone =>
+    ({ t: 'session.switch', session, ...(sessionKey ? { sessionKey } : {}) }),
   ttsError: (message: string): DaemonToPhone => ({ t: 'tts.error', message }),
 };
 

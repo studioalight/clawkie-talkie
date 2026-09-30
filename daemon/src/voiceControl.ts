@@ -47,7 +47,7 @@ export function startVoiceControl(peer: DaemonPeer, socketPath = process.env.CLA
       if (nl < 0) return;
       const line = buf.slice(0, nl);
       buf = '';
-      let cmd: { sessionId?: string; voiceId?: string; model?: string; reset?: boolean; gainDb?: number; adjustDb?: number; line?: string };
+      let cmd: { sessionId?: string; voiceId?: string; model?: string; reset?: boolean; gainDb?: number; adjustDb?: number; line?: string; session?: string; sessionKey?: string };
       try {
         cmd = JSON.parse(line);
       } catch {
@@ -61,7 +61,9 @@ export function startVoiceControl(peer: DaemonPeer, socketPath = process.env.CLA
       const hasGain = typeof cmd.gainDb === 'number';
       const hasAdjust = typeof cmd.adjustDb === 'number';
       const switchLine = typeof cmd.line === 'string' ? cmd.line.trim() : '';
-      if (!reset && !voiceId && !hasGain && !hasAdjust && !switchLine) {
+      const switchSession = typeof cmd.session === 'string' ? cmd.session.trim() : '';
+      const switchSessionKey = typeof cmd.sessionKey === 'string' ? cmd.sessionKey.trim() : '';
+      if (!reset && !voiceId && !hasGain && !hasAdjust && !switchLine && !switchSession) {
         sock.end(JSON.stringify({ ok: false, error: 'missing_voice_id_or_gain' }) + '\n');
         return;
       }
@@ -83,6 +85,12 @@ export function startVoiceControl(peer: DaemonPeer, socketPath = process.env.CLA
         const lr = peer.requestLineSwitch(sessionId, switchLine);
         if (!lr.ok) errors.push('line: ' + (lr.error ?? 'failed'));
         else applied = Math.max(applied, lr.applied ?? 0);
+      }
+      if (switchSession) {
+        // Session switch: re-aim the phone at another session on this shore.
+        const sr = peer.requestSessionSwitch(sessionId, switchSession, switchSessionKey || undefined);
+        if (!sr.ok) errors.push('session: ' + (sr.error ?? 'failed'));
+        else applied = Math.max(applied, sr.applied ?? 0);
       }
       if (hasGain || hasAdjust) {
         const gr = peer.setTtsVolume(sessionId, {

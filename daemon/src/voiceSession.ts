@@ -474,6 +474,27 @@ export class VoiceSession {
   // line.switch to the phone AFTER the reply finished playing, so the
   // operator's confirmation is never cut off by its own command.
   private pendingLineSwitch: string | null = null;
+  private pendingSessionSwitch: { session: string; sessionKey?: string } | null = null;
+
+  /** Session switch (operator model, mirror of line switch): re-aim the
+   *  phone at a different session ON THIS SHORE without a restart — the
+   *  fresh-session test (2026-09-30) proved the phone treats sessions as
+   *  swappable rooms; this verb makes the move spoken and seamless. The
+   *  optional sessionKey rides the message so no gateway lookup is needed
+   *  on the next join (same fix as the five-layer nest). */
+  requestSessionSwitch(session: string, sessionKey?: string): void {
+    this.touchActivity();
+    const id = session.trim();
+    if (!id) return;
+    const sw = { session: id, ...(sessionKey?.trim() ? { sessionKey: sessionKey.trim() } : {}) };
+    if (!this.state.turnInFlight && this.connected && this.peer && !this.peer.destroyed) {
+      console.log(`[voice ${this.roomId}] Session switch → ${id} (idle — delivering now)`);
+      this.sendToPeer(this.peer, daemonToPhone.sessionSwitch(id, sessionKey?.trim() || undefined));
+      return;
+    }
+    this.pendingSessionSwitch = sw;
+    console.log(`[voice ${this.roomId}] Session switch queued → ${id} (after current turn)`);
+  }
 
   /** Queue a line switch for delivery when the current TTS turn completes.
    *  Called by the voice control port (agent operator). Raw line name
@@ -1460,6 +1481,12 @@ export class VoiceSession {
     }
     // Switchboard: deliver a queued line switch now that the reply finished —
     // the phone defers until its playback buffer drains, then re-homes.
+    if (this.pendingSessionSwitch && this.connected && this.peer && !this.peer.destroyed) {
+      const sw = this.pendingSessionSwitch;
+      this.pendingSessionSwitch = null;
+      console.log(`[voice ${this.roomId}] Delivering queued session switch → ${sw.session}`);
+      this.sendToPeer(this.peer, daemonToPhone.sessionSwitch(sw.session, sw.sessionKey));
+    }
     if (this.pendingLineSwitch && this.connected && this.peer && !this.peer.destroyed) {
       const line = this.pendingLineSwitch;
       this.pendingLineSwitch = null;
