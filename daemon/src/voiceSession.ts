@@ -692,7 +692,13 @@ export class VoiceSession {
       initiator,
       trickle: true,
       wrtc: wrtc as unknown as SimplePeer.Options['wrtc'],
-      config: { iceServers: this.opts.iceServers },
+      config: {
+        iceServers: this.opts.iceServers,
+        // Relay-only (plan A, 2026-10-06): same env knob as peer.ts — the
+        // daemon's mature stack drives pairing through TURN when enabled,
+        // routing around the ESP32's libpeer controlled-role relay gap.
+        ...(process.env.CT_ICE_RELAY_ONLY === '1' ? { iceTransportPolicy: 'relay' } : {}),
+      },
       streams: stream ? [stream as MediaStream] : undefined,
     });
     this.peer = peer;

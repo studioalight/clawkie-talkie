@@ -103,6 +103,18 @@ interface RendezvousPeer {
 export class DaemonPeer {
   private readonly signalClient: SignalClient;
   private readonly iceServers: RTCIceServer[];
+  /** Relay-only ICE (plan A, field-verified 2026-10-06): the daemon's mature
+   *  stack drives pairing THROUGH the TURN relay, routing around the ESP32's
+   *  libpeer controlled-role relay-pairing gap (#101/#208 class). Env-gated:
+   *  CT_ICE_RELAY_ONLY=1 enables; default OFF preserves home-LAN direct
+   *  pairing for all clients. */
+  private readonly relayOnly: boolean;
+
+  private iceConfig(): { iceServers: RTCIceServer[]; iceTransportPolicy?: 'relay' } {
+    return this.relayOnly
+      ? { iceServers: this.iceServers, iceTransportPolicy: 'relay' as const }
+      : { iceServers: this.iceServers };
+  }
   private readonly signalServer: string;
   private readonly maxVoiceSessions: number;
   private readyAnnounced = false;
@@ -113,6 +125,7 @@ export class DaemonPeer {
 
   constructor(private readonly opts: DaemonPeerOptions) {
     this.iceServers = opts.iceServers ?? DEFAULT_ICE_SERVERS;
+    this.relayOnly = process.env.CT_ICE_RELAY_ONLY === '1';
     this.signalServer = opts.signalServer ?? DEFAULT_SIGNAL_SERVER;
     this.maxVoiceSessions = opts.maxVoiceSessions ?? DEFAULT_MAX_VOICE_SESSIONS;
 
@@ -357,7 +370,7 @@ export class DaemonPeer {
       initiator,
       trickle: true,
       wrtc: wrtc as unknown as SimplePeer.Options['wrtc'],
-      config: { iceServers: this.iceServers },
+      config: this.iceConfig(),
     });
 
     const timeout = setTimeout(() => {
