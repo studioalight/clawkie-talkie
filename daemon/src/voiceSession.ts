@@ -692,6 +692,17 @@ export class VoiceSession {
       initiator,
       trickle: true,
       wrtc: wrtc as unknown as SimplePeer.Options['wrtc'],
+      // ICE-lite munge (2026-10-07): libpeer's receive path can't answer
+      // daemon checks through TURN (coturn rb>0, sb=0). A lite agent NEVER
+      // sends checks — it only answers — so declaring a=ice-lite makes
+      // libpeer the sole full agent, driving nomination from its (working)
+      // send path. LiveKit (pion, full ICE) answered fine; leaner simple-
+      // peer did not. This is the daemon-side workaround while Espressif
+      // fixes esp_peer (issue #208).
+      sdpTransform: (sdp) => {
+        if (sdp.includes('a=ice-lite')) return sdp;
+        return sdp.replace(/^m=/m, 'a=ice-lite\r\nm=');
+      },
       config: {
         iceServers: this.opts.iceServers,
         // Relay-only (plan A, 2026-10-06): same env knob as peer.ts — the

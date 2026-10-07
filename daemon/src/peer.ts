@@ -657,6 +657,7 @@ export class DaemonPeer {
     const sessionId = (msg.sessionId ?? '').trim();
     const deviceId = (msg.deviceId ?? '').trim();
     const sessionKey = (msg.sessionKey ?? '').trim();
+    console.error(`[peer] rendezvous.join from ${rp.remoteId}: sessionId=${sessionId} sessionKey=${sessionKey || '(none)'} deviceId=${deviceId || '(none)'}`);
     const channel = (msg.channel ?? '').trim();
     const target = (msg.target ?? '').trim();
     const accountId = (msg.accountId ?? '').trim();
