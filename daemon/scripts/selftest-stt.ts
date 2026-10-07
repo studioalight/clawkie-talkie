@@ -18,8 +18,9 @@ for (let c = 0; c < durationMs / 20; c++) {
   chunks.push(buf);
 }
 
+const modelArg = process.argv[2];
 const session = new OpenClawInferSttSession(
-  { sampleRate, enablePhraseChunks: false },
+  { sampleRate, enablePhraseChunks: false, ...(modelArg ? { model: modelArg } : {}) },
   {
     onReady: () => console.log('[test] onReady'),
     onPartial: (t, f) => console.log(`[test] onPartial "${t}" final=${f}`),
