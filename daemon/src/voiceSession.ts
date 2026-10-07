@@ -699,10 +699,13 @@ export class VoiceSession {
       // send path. LiveKit (pion, full ICE) answered fine; leaner simple-
       // peer did not. This is the daemon-side workaround while Espressif
       // fixes esp_peer (issue #208).
-      sdpTransform: (sdp) => {
-        if (sdp.includes('a=ice-lite')) return sdp;
-        return sdp.replace(/^m=/m, 'a=ice-lite\r\nm=');
-      },
+      // NOTE 2026-10-07 evening: the munge was originally expressed as a
+      // sdpTransform option — but simple-peer applies that to the offer
+      // object and then emits `this._pc.localDescription || offer`; the
+      // node-datachannel polyfill regenerates localDescription from its
+      // internal state, so the munge NEVER reached the wire (confirmed via
+      // ESP32 serial capture of an ice-lite-less offer). Applied at the
+      // signal-handler (wire) level below instead.
       config: {
         iceServers: this.opts.iceServers,
         // Relay-only (plan A, 2026-10-06): same env knob as peer.ts — the
@@ -717,6 +720,18 @@ export class VoiceSession {
 
     peer.on('signal', (data) => {
       if (this.peer !== peer || this.remoteId !== remoteId) return;
+      // Wire-level ice-lite munge (see SimplePeer construction note):
+      // only offers — answers must not claim lite. Idempotent guard.
+      if (
+        (data as { type?: string }).type === 'offer' &&
+        typeof (data as { sdp?: string }).sdp === 'string' &&
+        !(data as { sdp: string }).sdp.includes('a=ice-lite')
+      ) {
+        (data as { sdp: string }).sdp = (data as { sdp: string }).sdp.replace(
+          /^m=/m,
+          'a=ice-lite\r\nm=',
+        );
+      }
       void this.signalClient
         .sendSignal(remoteId, data as unknown as SignalData)
         .catch((err) => {
