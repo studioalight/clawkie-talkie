@@ -171,6 +171,16 @@ export class ElevenLabsTtsSession {
         this.cb.onOpen?.();
         this.openedFired = true;
         const httpStream = Readable.fromWeb(response.body as unknown as import('node:stream/web').ReadableStream);
+        // Cancel via AbortController makes this stream emit AbortError
+        // asynchronously — with no listener that was an unhandled 'error'
+        // event and killed the whole daemon mid-turn (2026-10-07): every
+        // voice client (Pi/web) dropped into reconnect loops while launchd
+        // restarted the process. Swallow errors on the cancelled stream;
+        // ffmpeg-side handler above still reports real failures.
+        httpStream.on('error', (err: Error) => {
+          if (this.closed) return;
+          this.fail(`tts stream failed: ${err.message}`);
+        });
         httpStream.pipe(ffmpeg.stdin);
         ffmpeg.stdout.on('end', () => {
           if (this.closed) return;
