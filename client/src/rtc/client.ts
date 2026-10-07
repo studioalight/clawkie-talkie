@@ -34,12 +34,13 @@ export interface RtcClientOptions {
 const DEFAULT_SIGNAL_SERVER =
   typeof import.meta.env.VITE_SIGNAL_SERVER === 'string' && import.meta.env.VITE_SIGNAL_SERVER.length > 0
     ? import.meta.env.VITE_SIGNAL_SERVER
-    : 'https://api.rambly.app';
+    : 'https://signaling.studioalight.com';
 
+// ICE servers come from VITE_ICE_SERVERS_JSON at build time. Fallback is
+// STUN-only — never silently route media through third-party TURN infra
+// (rambly demo creds shipped with the reference code; removed 2026-10-07).
 const HOSTED_DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'turn:api.rambly.app:3478', username: 'rambly', credential: 'rambly' },
-  { urls: 'turn:api.rambly.app:3478?transport=tcp', username: 'rambly', credential: 'rambly' },
 ];
 
 export const DEFAULT_ICE_SERVERS: RTCIceServer[] =

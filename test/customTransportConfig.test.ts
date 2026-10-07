@@ -6,7 +6,7 @@ import { parseClientIceServersJson } from '../client/src/rtc/client';
 describe('daemon custom transport config', () => {
   it('keeps hosted defaults when CLI and env are unset', () => {
     const cli = parseCli([], {});
-    expect(cli.signalServer).toBe('https://api.rambly.app');
+    expect(cli.signalServer).toBe('https://signaling.studioalight.com');
     expect(cli.iceServers).toBeUndefined();
   });
 

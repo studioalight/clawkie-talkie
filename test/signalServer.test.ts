@@ -7,8 +7,8 @@ const source = (path: string) =>
   readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8');
 
 describe('signal server config', () => {
-  it('defaults to the hosted rambly broker', () => {
-    expect(DEFAULT_SIGNAL_SERVER).toBe('https://api.rambly.app');
+  it('defaults to the studio broker', () => {
+    expect(DEFAULT_SIGNAL_SERVER).toBe('https://signaling.studioalight.com');
   });
 
   it('does not read signal server overrides at module load', () => {
