@@ -12,6 +12,7 @@ const VAD_FRAME_DURATION_MS = 20;
 const DEFAULT_PARTIAL_CHUNK_CADENCE_MS = 5_000;
 const DEFAULT_PARTIAL_CHUNK_OVERLAP_MS = 500;
 const DEFAULT_MAX_CONCURRENT_CHUNK_TRANSCRIPTS = 2;
+const DEFAULT_TRANSCRIBE_TIMEOUT_MS = 120_000;
 
 type TranscribeRequest = {
   wavPath: string;
@@ -65,6 +66,8 @@ export interface OpenClawInferSttSessionOptions {
   model?: string;
   transcribe?: TranscribeFn;
   transcribeChunk?: TranscribeFn;
+  /** Hard cap for the final whole-turn transcribe (ms). Default 120000. */
+  transcribeTimeoutMs?: number;
   pcmToWav?: PcmToWavFn;
   writeFile?: WriteFileFn;
   createTempDir?: CreateTempDirFn;
@@ -146,11 +149,10 @@ export class OpenClawInferSttSession {
 
       const finalStartedAtMs = Date.now();
       this.log(`[stt] final infer start wav=turn.wav pcmBytes=${pcm.length} chunks=${this.chunks.length}`);
-      const text = await this.transcribe({
+      const text = await this.transcribeWithTimeout({
         wavPath,
         language: this.opts.language,
         ...(this.opts.model ? { model: this.opts.model } : {}),
-        signal: this.abortController.signal,
       });
       this.log(`[stt] final infer done latencyMs=${Date.now() - finalStartedAtMs}`);
 
@@ -161,7 +163,12 @@ export class OpenClawInferSttSession {
       this.destroySpeechDetector();
       this.cb.onDone(text);
       this.cb.onClosed();
-    } catch {
+    } catch (err) {
+      // Log unconditionally — turns hung silently for hours before this was
+      // added (2026-10-07): errors were swallowed whenever the session had
+      // already been closed by a data-channel teardown.
+      const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      this.log(`[stt] final infer failed: ${detail}`);
       if (this.closed) return;
       this.closed = true;
       this.abortController.abort();
@@ -171,6 +178,31 @@ export class OpenClawInferSttSession {
       this.cb.onClosed();
     } finally {
       if (tempDir) await this.cleanupTempDir(tempDir);
+    }
+  }
+
+  /**
+   * Bounded final transcribe (2026-10-07): a hung `openclaw infer` child used
+   * to wedge the turn forever — no sttError, no log, just silence (observed
+   * 15:38 & 17:57, both attempts never resolved). Timeout aborts the child
+   * via the existing signal plumbing and surfaces an error to the phone.
+   */
+  private async transcribeWithTimeout(request: TranscribeRequest): Promise<string> {
+    const timeoutMs = this.opts.transcribeTimeoutMs ?? DEFAULT_TRANSCRIBE_TIMEOUT_MS;
+    let timer: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        this.abortController.abort();
+        reject(new Error(`openclaw infer did not finish within ${timeoutMs}ms (timeout)`));
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([
+        this.transcribe({ ...request, signal: this.abortController.signal }),
+        timeoutPromise,
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
