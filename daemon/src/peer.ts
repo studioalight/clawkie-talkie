@@ -47,9 +47,12 @@ import { VoiceSession } from './voiceSession.js';
 
 const MAX_BUFFERED_CANDIDATES_PER_PEER = 32;
 
+// ICE servers come exclusively from CT_ICE_SERVERS_JSON (see daemon .env).
+// STUN-only fallback: never silently dial third-party TURN infrastructure
+// (rambly demo creds were left here from the reference code — removed
+// 2026-10-07). If env is missing we at least keep host+srflx pairing alive.
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'turn:api.rambly.app:3478', username: 'rambly', credential: 'rambly' },
 ];
 
 // Mobile browsers can take noticeably longer to complete the initial
