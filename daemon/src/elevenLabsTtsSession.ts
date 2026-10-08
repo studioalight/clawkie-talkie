@@ -16,7 +16,7 @@ import { Readable } from 'node:stream';
 import { spawn, type ChildProcess } from 'node:child_process';
 
 export const ELEVENLABS_TTS_SAMPLE_RATE = 16000;
-const PCM_CHUNK_BYTES = 6400; // 200 ms of mono PCM16 at 16 kHz (5 frames/sec, low overhead)
+const PCM_CHUNK_BYTES = 3200; // 100 ms of mono PCM16 at 16 kHz (restored for comparison)
 const API_BASE = 'https://api.elevenlabs.io/v1';
 // NOTE (2026-09-17, corrected): an earlier revision forced
 // eleven_flash_v2_5 here, based on a gap-scan that flagged v3 stream
