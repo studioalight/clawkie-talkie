@@ -13,9 +13,16 @@ export function resolveIceServers(
 ): RTCIceServer[] | undefined {
   if (cliValue !== undefined) return parseIceServersJson(cliValue, '--ice-servers-json');
   if (env.CT_ICE_SERVERS_JSON !== undefined) {
-    return parseIceServersJson(env.CT_ICE_SERVERS_JSON, 'CT_ICE_SERVERS_JSON');
+    try {
+      return parseIceServersJson(env.CT_ICE_SERVERS_JSON, 'CT_ICE_SERVERS_JSON');
+    } catch (e) {
+      console.error('[config] Failed to parse CT_ICE_SERVERS_JSON, using default:', (e as Error).message);
+    }
   }
-  return undefined;
+  return [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'turn:45.33.91.78:3478', username: 'clawkie', credential: '***' }
+  ];
 }
 
 export function parseIceServersJson(value: string, label: string): RTCIceServer[] {
