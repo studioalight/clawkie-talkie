@@ -21,7 +21,7 @@ export function resolveIceServers(
   }
   return [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'turn:45.33.91.78:3478', username: 'clawkie', credential: '***' }
+    { urls: 'turn:45.33.91.78:3478', username: 'clawkie', credential: 'clawkiepass' }
   ];
 }
 

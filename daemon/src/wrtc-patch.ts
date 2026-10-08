@@ -1,25 +1,8 @@
 /**
  * wrtc-patch.ts — node-datachannel polyfill with simple-peer compatibility
- *
- * node-datachannel is a Node.js binding for libdatachannel, the same C++ library
- * that the ESP32's esp_peer uses. This gives us native SCTP data channel interop.
- *
- * Problem: simple-peer mutates .sdp on RTCSessionDescription objects returned
- * by createOffer()/createAnswer(). The node-datachannel polyfill stores _sdp
- * in a private WeakMap with getter-only access, so mutation throws.
- *
- * Fix: Override sdp on the prototype with a setter that creates an instance-level
- * property override. The getter still reads from the WeakMap for the initial value;
- * after a set, the instance getter returns the override.
- *
- * @roamhq/wrtc-specific features that are NOT available:
- * - nonstandard.RTCAudioSource (for outbound WebRTC audio tracks)
- * - MediaStream
- *
- * These are already disabled in the daemon (TTS audio goes via data channel,
- * not RTP tracks), so the swap is safe.
  */
 
+import ndc from 'node-datachannel';
 import { default as ndcPolyfill } from 'node-datachannel/polyfill';
 
 // --- Patch RTCSessionDescription.sdp to be writable ---
@@ -45,27 +28,44 @@ if (RTCSessionDescriptionCtor?.prototype) {
   }
 }
 
-// --- Export the patched polyfill as a wrtc replacement ---
+// --- Patched RTCPeerConnection that reliably gathers TURN relay candidates ---
 
-/**
- * Drop-in replacement for `@roamhq/wrtc`.
- *
- * Usage:
- *   import { wrtc } from './wrtc-patch.js';
- *   new SimplePeer({ wrtc, ... })
- *
- * What works:
- * - RTCPeerConnection (ICE, DTLS, SCTP data channels)
- * - RTCSessionDescription (with writable sdp for simple-peer)
- * - RTCIceCandidate
- * - RTCDataChannel + events (onmessage, onopen, onclose, onerror)
- * - Binary data via data channel (sendMessageBinary / peer.send(Uint8Array))
- *
- * What doesn't work (not needed by daemon):
- * - nonstandard.RTCAudioSource (wrtc-specific, not in spec)
- * - MediaStream (wrtc-specific extension)
- * - addTrack / addTransceiver (throws "Not implemented")
- */
-export const wrtc = ndcPolyfill as unknown as import('simple-peer').Options['wrtc'];
+const OrigRTCPeerConnection = (ndcPolyfill as any).RTCPeerConnection;
+
+export class PatchedRTCPeerConnection extends OrigRTCPeerConnection {
+  constructor(config: any = {}) {
+    console.log('[wrtc-patch] PatchedRTCPeerConnection instantiated! config.iceServers count:', config.iceServers?.length);
+    if (!config.peerConnection) {
+      const iceServers = config.iceServers?.map((s: any) => {
+        const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+        return urls.map((u: string) => {
+          if (s.username && s.credential) {
+            const [proto, rest] = u.split(/:(.*)/);
+            return `${proto}:${s.username}:${s.credential}@${rest}`;
+          }
+          return u;
+        });
+      }).flat() ?? [];
+
+      console.log('[wrtc-patch] creating native ndc.PeerConnection with:', JSON.stringify(iceServers));
+
+      const peerIdentity = config.peerIdentity ?? `peer-${Math.random().toString(36).slice(2, 9)}`;
+      const nativeConfig: any = { iceServers };
+      if (config.iceTransportPolicy) {
+        nativeConfig.iceTransportPolicy = config.iceTransportPolicy;
+      }
+
+      const nativePC = new (ndc as any).PeerConnection(peerIdentity, nativeConfig);
+      super({ ...config, peerConnection: nativePC });
+    } else {
+      super(config);
+    }
+  }
+}
+
+export const wrtc = {
+  ...ndcPolyfill,
+  RTCPeerConnection: PatchedRTCPeerConnection,
+} as unknown as import('simple-peer').Options['wrtc'];
 
 export default wrtc;
