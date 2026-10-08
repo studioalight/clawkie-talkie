@@ -65,8 +65,8 @@ const MAX_BUFFERED_TTS_TURN_BYTES = 64 * 1024 * 1024;
 const TTS_PACE_TICK_MS = 40;
 const TTS_PACE_BYTES_PER_TICK = 1280; // 40ms of 16kHz mono PCM16 per tick (fits Ethernet MTU)
 const TTS_PACE_LOOKAHEAD_BYTES = 12800; // budget cap (~400ms)
-const TTS_PACE_HEADSTART_BYTES = 2560; // cushion: 2 chunks (80ms)
-const TTS_PACE_RATE = 1.0;
+const TTS_PACE_HEADSTART_BYTES = 38400; // cushion: 1.2s headstart matching ESP32 preroll buffer
+const TTS_PACE_RATE = 1.1; // 1.1x steady feed to sustain 1.2s buffer depth
 const MAX_SCTP_BUFFERED_AMOUNT = 64 * 1024; // 64KB cushion: prevents delayed-SACK micro-pauses while guarding against runaway
 
 export interface VoiceSessionConfig {
