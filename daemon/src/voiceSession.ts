@@ -45,15 +45,18 @@ const MAX_BUFFERED_CANDIDATES_PER_PEER = 32;
 const RECENT_SESSIONS_SUBSCRIPTION_INTERVAL_MS = 60_000;
 const MAX_CONTROL_HISTORY_EVENTS = 128;
 const MAX_BUFFERED_TTS_TURN_BYTES = 64 * 1024 * 1024;
-// Realtime pacing for data-channel TTS (2026-10-07 23:3x): the ESP32 speaker
+// Realtime pacing for data-channel TTS (2026-10-07 23:3x, rewritten 10-08): the ESP32 speaker
 // ring is only 2s (64KB @16kHz) and audio_pipeline_play runs in the esp_peer
 // recv callback — blasting ElevenLabs-produced chunks overruns it, blocks the
-// peer loop, SCTP flow-control backs up, and playback stalls in 2s-burst /
-// 30-40s-gap cycles (field report 23:35). Buffer the turn and drip-feed at
-// realtime with a small lookahead instead.
-const TTS_PACE_TICK_MS = 100; // delivery tick
-const TTS_PACE_LOOKAHEAD_BYTES = 32000; // ~1s of 16kHz mono PCM kept queued
-const TTS_PACE_START_DELAY_MS = 400; // prime a little buffer before first send
+// peer loop, SCTP flow-control backs up silently, and playback stalls in
+// 2s-burst / 30-40s-gap cycles (23:35) — or, with the first counter-based
+// attempt, deadlocks entirely (silence, no tts.done: 10-08 09:16 serial).
+// Model: a byte budget grows at realtime (TTS_PACE_BYTES_PER_TICK per
+// TTS_PACE_TICK_MS, capped at ~1s) and chunks only leave when the budget can
+// cover them — generation speed never reaches the wire faster than playback.
+const TTS_PACE_TICK_MS = 100;
+const TTS_PACE_BYTES_PER_TICK = 3200; // 100ms of 16kHz mono PCM16 per tick
+const TTS_PACE_LOOKAHEAD_BYTES = 32000; // ~1s max on-wire backlog
 
 export interface VoiceSessionConfig {
   roomId: string;
@@ -271,7 +274,7 @@ export class VoiceSession {
   private ttsPaceTimer: NodeJS.Timeout | null = null;
   private ttsPaceToken: number | null = null;
   private ttsPaceCursor = 0; // next canonical chunk index to send live
-  private ttsPaceQueuedBytes = 0; // bytes queued but not yet sent live
+  private ttsPaceBudget = 0; // send bytes currently allowed (grows at realtime)
   private ttsPaceDonePending = false; // generation done; tts waits for pump to drain
   private recentSessionsInterval: NodeJS.Timeout | null = null;
   private readonly replacedRemoteIds = new Set<string>();
@@ -1478,13 +1481,14 @@ export class VoiceSession {
   }
 
   /**
-   * Realtime pacing pump for data-channel TTS (2026-10-07 23:3x). The ESP32
-   * speaker ring is 2s and its recv callback blocks the peer loop when full,
-   * so send chunks at (or slightly under) realtime instead of as fast as
-   * ElevenLabs generates them. Sends while queued-but-unsent canonical bytes
-   * exceed TTS_PACE_LOOKAHEAD_BYTES (~1s) — i.e. the board's ring never sees
-   * more than ~1s of undrained audio, and generation faster than playback
-   * no longer overruns it.
+   * Realtime pacing pump for data-channel TTS (rewritten 2026-10-08). The
+   * ESP32 speaker ring is 2s and its recv callback blocks the peer loop when
+   * full, so chunks leave only as the byte budget allows: the budget grows
+   * at realtime per tick (capped ~1s) and a chunk is sent only when the
+   * budget covers it. Generation faster than playback can no longer overrun
+   * the board. v1's counter-based gate never counted newly-arrived chunks
+   * and blocked forever — never again count what arrives; count what may
+   * LEAVE.
    */
   private ensureTtsPacePump(token: number): void {
     if (this.ttsPaceTimer) {
@@ -1492,15 +1496,8 @@ export class VoiceSession {
       this.stopTtsPacePump();
     }
     this.ttsPaceToken = token;
-    this.ttsPaceQueuedBytes = 0;
-    const firstSendAt = Date.now() + TTS_PACE_START_DELAY_MS;
     const turn = this.ttsAudioTurn;
-    if (turn) {
-      this.ttsPaceCursor = turn.liveDataCursor;
-      for (let i = turn.liveDataCursor; i < turn.chunks.length; i++) {
-        this.ttsPaceQueuedBytes += turn.chunks[i].byteLength;
-      }
-    }
+    if (turn) this.ttsPaceCursor = turn.liveDataCursor;
     this.ttsPaceTimer = setInterval(() => {
       if (this.ttsPaceToken !== token || !this.isTurnActive(token)) {
         this.stopTtsPacePump();
@@ -1509,14 +1506,20 @@ export class VoiceSession {
       const t = this.ttsAudioTurn;
       if (!t || t.turnId !== token || t.drained || t.abandoned) {
         this.stopTtsPacePump();
+        if (this.ttsPaceDonePending) {
+          this.ttsPaceDonePending = false;
+          this.completeTtsTurn('tts_pace_transport');
+        }
         return;
       }
-      if (Date.now() < firstSendAt) return; // prime buffer before first send
+      // Grow budget at realtime, capped at ~1s of audio.
+      this.ttsPaceBudget = Math.min(
+        this.ttsPaceBudget + TTS_PACE_BYTES_PER_TICK,
+        TTS_PACE_LOOKAHEAD_BYTES,
+      );
       while (this.ttsPaceCursor < t.chunks.length) {
-        // Stop sending when the unsent backlog (bytes the board hasn't
-        // received yet) drops to ~1s of audio — wait for realtime to catch up.
-        if (this.ttsPaceQueuedBytes <= TTS_PACE_LOOKAHEAD_BYTES) return;
         const chunk = t.chunks[this.ttsPaceCursor];
+        if (chunk.byteLength > this.ttsPaceBudget) break;
         const chunkToSend = this.sampleRateForTts === STT_SAMPLE_RATE
           ? chunk
           : resamplePcm(chunk, TTS_SAMPLE_RATE, STT_SAMPLE_RATE);
@@ -1527,23 +1530,25 @@ export class VoiceSession {
             this.markTtsAudioReplayOnReconnect(token, this.ttsPaceCursor);
           }
           this.stopTtsPacePump();
+          if (this.ttsPaceDonePending) {
+            this.ttsPaceDonePending = false;
+            this.completeTtsTurn('tts_pace_transport');
+          }
           return;
         }
         this.markTtsAudioStarted(token);
-        this.ttsPaceQueuedBytes -= chunk.byteLength;
+        this.ttsPaceBudget -= chunk.byteLength;
         this.ttsPaceCursor += 1;
         t.liveDataCursor = this.ttsPaceCursor; // keep reconnect-replay cursor in sync
       }
-      // All canonical chunks sent live.
-      if (t.complete) {
+      if (this.ttsPaceCursor >= t.chunks.length && t.complete) {
         this.stopTtsPacePump();
         if (this.ttsPaceDonePending) {
           this.ttsPaceDonePending = false;
           this.completeTtsTurn('tts_pace_done');
         }
-        return;
       }
-      // Timer idles until more chunks arrive or generation completes.
+      // otherwise: timer idles until more chunks arrive or generation completes
     }, TTS_PACE_TICK_MS);
     this.ttsPaceTimer.unref?.();
   }
@@ -1555,7 +1560,7 @@ export class VoiceSession {
     }
     this.ttsPaceToken = null;
     this.ttsPaceCursor = 0;
-    this.ttsPaceQueuedBytes = 0;
+    this.ttsPaceBudget = 0;
   }
 
   private drainLiveDataTtsAudio(token: number): void {
