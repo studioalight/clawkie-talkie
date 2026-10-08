@@ -416,6 +416,7 @@ export class VoiceSession {
       }
 
       const livePeer = !!this.peer && this.remoteId === event.from && !this.peer.destroyed;
+      console.log(`[voice ${opts.roomId}] DEBUG incoming signal keys: ${Object.keys(payload ?? {})}, type=${(payload as any)?.type}, cand=${!!(payload as any)?.candidate}`);
       const kind = classifySignal(payload);
       console.log(`[voice ${opts.roomId}] DEBUG: signal kind=${kind} from ${event.from} livePeer=${livePeer}`);
       const action = decideIncomingSignal({ hasLivePeer: livePeer, kind });
