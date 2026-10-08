@@ -1759,7 +1759,16 @@ export class VoiceSession {
           if (!useTrack || !this.audioSource) {
             // Paced data-channel path: if the pace pump still has unsent
             // chunks, defer ttsDone until the pump drains its backlog.
-            if (this.ttsPaceTimer && this.ttsPaceToken === token) return;
+            if (this.ttsPaceTimer && this.ttsPaceToken === token) {
+              // Generation done while pump still draining: ARM the flag so
+              // the pump fires completeTtsTurn('tts_pace_done') when the
+              // backlog empties. v2 bug (10-08 10:00 field: Pi stuck in TTS
+              // play after audio finished): early-return without arming →
+              // pump drain saw ttsPaceDonePending=false → tts.done never
+              // sent → phone waits forever after playback.
+              this.ttsPaceDonePending = true;
+              return;
+            }
             this.completeTtsTurn('tts_done');
             return;
           }
