@@ -723,6 +723,7 @@ export class VoiceSession {
     this.acceptedAnswer = false;
     console.error(`[voice ${this.roomId}] establishing connection with phone=${remoteId} initiator=${initiator}`);
 
+    console.log(`[voice ${this.roomId}] ICE CONFIG: ${JSON.stringify(this.opts.iceServers)}`);
     const { stream } = this.openOutboundAudio();
 
     const peer = new SimplePeer({
