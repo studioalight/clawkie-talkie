@@ -1797,17 +1797,6 @@ export class VoiceSession {
             return;
           }
           // Direct delivery: send chunk straight to the data channel as it arrives from ElevenLabs.
-          // Hardware buffering (512KB PSRAM) and 2.0s pre-roll cushion on the client handle jitter naturally.
-          if (this.sampleRateForTts === STT_SAMPLE_RATE) {
-            this.sendBinary(new Uint8Array(audio.chunk));
-          } else {
-            const resampled = resamplePcm(Buffer.from(audio.chunk), TTS_SAMPLE_RATE, STT_SAMPLE_RATE);
-            this.sendBinary(new Uint8Array(resampled));
-          }
-          // Replay retention overflow must not cut off live connected
-          // data-channel audio; only reconnect replay is dropped.
-          // When TTS generates at 16kHz directly (data channel mode),
-          // no resampling is needed.
           if (this.sampleRateForTts === STT_SAMPLE_RATE) {
             this.sendBinary(new Uint8Array(audio.chunk));
           } else {
