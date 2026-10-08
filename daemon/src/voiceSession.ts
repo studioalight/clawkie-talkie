@@ -67,7 +67,7 @@ const TTS_PACE_BYTES_PER_TICK = 1280; // 40ms of 16kHz mono PCM16 per tick (fits
 const TTS_PACE_LOOKAHEAD_BYTES = 12800; // budget cap (~400ms)
 const TTS_PACE_HEADSTART_BYTES = 2560; // cushion: 2 chunks (80ms)
 const TTS_PACE_RATE = 1.0;
-const MAX_SCTP_BUFFERED_AMOUNT = 2560; // Backpressure: pause if SCTP send buffer has >=2 in-flight MTU chunks
+const MAX_SCTP_BUFFERED_AMOUNT = 64 * 1024; // 64KB cushion: prevents delayed-SACK micro-pauses while guarding against runaway
 
 export interface VoiceSessionConfig {
   roomId: string;
