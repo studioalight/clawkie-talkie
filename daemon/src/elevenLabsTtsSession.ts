@@ -29,7 +29,7 @@ const API_BASE = 'https://api.elevenlabs.io/v1';
 // match that fidelity we stream pcm_44100 and run the same ffmpeg
 // resample in-daemon, as a persistent pipe: HTTP chunk in, 16kHz chunk
 // out (first converted byte measured at 0.91s).
-const STREAM_INPUT_RATE = 44100;
+const STREAM_INPUT_RATE = 16000;
 const RESAMPLE_RATE = 16000;
 
 // OpenClaw's configured speaker voice (gateway tts.providers.elevenlabs.
@@ -127,23 +127,8 @@ export class ElevenLabsTtsSession {
       model_id: modelId,
     });
 
-    // Persistent 44.1kHz→16kHz resampler pipe (same ffmpeg as the old
-    // whole-file path used, so the fidelity chain matches what the
-    // non-streaming replies produced).
-    const ffmpeg = spawn('ffmpeg', [
-      '-hide_banner', '-loglevel', 'error',
-      '-probesize', '32', '-analyzeduration', '0',
-      '-f', 's16le', '-ar', String(STREAM_INPUT_RATE), '-ac', '1',
-      '-i', 'pipe:0',
-      '-f', 's16le', '-ar', String(RESAMPLE_RATE), '-ac', '1',
-      'pipe:1',
-    ], { stdio: ['pipe', 'pipe', 'ignore'] });
-    this.ffmpeg = ffmpeg;
-    ffmpeg.stdout.on('data', (chunk: Buffer) => this.feed(chunk));
-    ffmpeg.on('error', (err: Error) => this.fail(`ffmpeg resampler failed: ${err.message}`));
-
-    // One retry on transient conditions (network error, 429, 5xx). A 400
-    // fails fast — the body is logged and the whole-file fallback takes it.
+    // Direct 16kHz PCM stream from ElevenLabs without ffmpeg pipe buffering.
+    // Pipe stdout buffering in ffmpeg was causing periodic ~1.58s block flushes.
     for (let attempt = 0; attempt < 2; attempt++) {
       let response: Response;
       try {
@@ -171,23 +156,19 @@ export class ElevenLabsTtsSession {
         this.cb.onOpen?.();
         this.openedFired = true;
         const httpStream = Readable.fromWeb(response.body as unknown as import('node:stream/web').ReadableStream);
-        // Cancel via AbortController makes this stream emit AbortError
-        // asynchronously — with no listener that was an unhandled 'error'
-        // event and killed the whole daemon mid-turn (2026-10-07): every
-        // voice client (Pi/web) dropped into reconnect loops while launchd
-        // restarted the process. Swallow errors on the cancelled stream;
-        // ffmpeg-side handler above still reports real failures.
         httpStream.on('error', (err: Error) => {
           if (this.closed) return;
           this.fail(`tts stream failed: ${err.message}`);
         });
-        httpStream.pipe(ffmpeg.stdin);
-        ffmpeg.stdout.on('end', () => {
+        httpStream.on('data', (chunk: Buffer) => {
+          if (this.closed) return;
+          this.feed(chunk);
+        });
+        httpStream.on('end', () => {
           if (this.closed) return;
           this.emitChunks(true);
           this.finish();
         });
-        ffmpeg.stdout.on('error', (err: Error) => this.fail(`resampler read failed: ${err.message}`));
         return;
       }
 
