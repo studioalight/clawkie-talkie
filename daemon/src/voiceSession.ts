@@ -54,9 +54,19 @@ const MAX_BUFFERED_TTS_TURN_BYTES = 64 * 1024 * 1024;
 // Model: a byte budget grows at realtime (TTS_PACE_BYTES_PER_TICK per
 // TTS_PACE_TICK_MS, capped at ~1s) and chunks only leave when the budget can
 // cover them — generation speed never reaches the wire faster than playback.
+// REWRITE 11:19 after field diag (11:16 turn): pump held EXACTLY 1.0x
+// realtime with ZERO slack — 145 chunks in 15.1s (0.96x), no stalls, no
+// gaps, no failures... and the board still paused. A receiver with no
+// buffer slack underruns on the first scheduling jitter and its player
+// stall-seeks. Fix: head-start + slight overdrive — board gets ~1.5s of
+// buffer immediately, then audio arrives at TTS_PACE_RATE (>1.0x realtime)
+// so its buffer stays ~1.5s deep: never starves, never overflows the 2s
+// ring (drop-incoming guards the worst case).
 const TTS_PACE_TICK_MS = 100;
 const TTS_PACE_BYTES_PER_TICK = 3200; // 100ms of 16kHz mono PCM16 per tick
-const TTS_PACE_LOOKAHEAD_BYTES = 32000; // ~1s max on-wire backlog
+const TTS_PACE_LOOKAHEAD_BYTES = 32000; // budget cap (~1s)
+const TTS_PACE_HEADSTART_BYTES = 48000; // initial burst: ~1.5s of audio
+const TTS_PACE_RATE = 1.15; // overdrive factor — buffer depth stays ~1.5s
 
 export interface VoiceSessionConfig {
   roomId: string;
@@ -1506,6 +1516,10 @@ export class VoiceSession {
     this.ttsPaceToken = token;
     const turn = this.ttsAudioTurn;
     if (turn) this.ttsPaceCursor = turn.liveDataCursor;
+    // Head-start (11:19 rewrite): prime the receiver's buffer with ~1.5s of
+    // audio immediately so ticks only SUSTAIN depth (overdrive 1.15x), not
+    // build it from zero — 1.0x-with-zero-slack was the 11:16 field pause.
+    this.ttsPaceBudget = TTS_PACE_HEADSTART_BYTES;
     // Diag reset (field timing instrumentation, live pump→send path)
     this.ttsDiagStartedAt = Date.now();
     this.ttsDiagSentCount = 0;
@@ -1536,9 +1550,9 @@ export class VoiceSession {
         }
         return;
       }
-      // Grow budget at realtime, capped at ~1s of audio.
+      // Grow budget at realtime × overdrive, capped at ~1s.
       this.ttsPaceBudget = Math.min(
-        this.ttsPaceBudget + TTS_PACE_BYTES_PER_TICK,
+        this.ttsPaceBudget + TTS_PACE_BYTES_PER_TICK * TTS_PACE_RATE,
         TTS_PACE_LOOKAHEAD_BYTES,
       );
       while (this.ttsPaceCursor < t.chunks.length) {
