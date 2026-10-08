@@ -999,13 +999,14 @@ export class VoiceSession {
   private startKeepalive(): void {
     if (this.keepaliveInterval) return;
     this.keepaliveInterval = setInterval(() => {
-      if (!this.connected || !this.peer) return;
+      // Keepalive: send every 15s when idle; pause during active audio turns to avoid data channel traffic
+      if (!this.connected || !this.peer || this.state.turnInFlight) return;
       try {
         this.peer.send(JSON.stringify({ t: 'keepalive' }));
       } catch (err) {
         console.error(`[voice ${this.roomId}] keepalive send failed: ${err instanceof Error ? err.message : err}`);
       }
-    }, 3_000);
+    }, 15_000);
     this.keepaliveInterval.unref?.();
   }
 
