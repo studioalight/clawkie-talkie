@@ -65,8 +65,8 @@ const MAX_BUFFERED_TTS_TURN_BYTES = 64 * 1024 * 1024;
 const TTS_PACE_TICK_MS = 100;
 const TTS_PACE_BYTES_PER_TICK = 3200; // 100ms of 16kHz mono PCM16 per tick
 const TTS_PACE_LOOKAHEAD_BYTES = 32000; // budget cap (~1s)
-const TTS_PACE_HEADSTART_BYTES = 48000; // initial burst: ~1.5s of audio
-const TTS_PACE_RATE = 1.15; // overdrive factor — buffer depth stays ~1.5s
+const TTS_PACE_HEADSTART_BYTES = 6400; // cushion: 2 chunks (200ms) — bulk bursts broke esp_peer (11:28: 24 chunks/1.35s → board held them 67s)
+const TTS_PACE_RATE = 1.0; // steady drip: field-proven shape (10:06/11:16 turns played fine; bursts choked the board)
 
 export interface VoiceSessionConfig {
   roomId: string;
