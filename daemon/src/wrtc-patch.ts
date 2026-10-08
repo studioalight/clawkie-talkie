@@ -5,6 +5,26 @@
 import ndc from 'node-datachannel';
 import { default as ndcPolyfill } from 'node-datachannel/polyfill';
 
+// Initialize native libdatachannel logger to expose ICE/DTLS details:
+try {
+  // Verbose (field 01:12): consent-freshness dies ~7-10s after ICE completes on the
+  // relay pair. libjuice routes its own internals through this callback at Verbose —
+  // capture per-entry consent/sends/receives to name the losing hop.
+  (ndc as any).initLogger?.('Verbose', (level: string, message: string) => {
+    if (
+      message.includes('ICE') || message.includes('STUN') || message.includes('candidate') ||
+      message.includes('nominate') || message.includes('selected') || message.includes('DTLS') ||
+      message.includes('juice') || message.includes('Consent') || message.includes('Relay') ||
+      message.includes('Permission') || message.includes('indicat') ||
+      message.toLowerCase().includes('channel') || message.toLowerCase().includes('binding')
+    ) {
+      console.log(`[libdatachannel ${level}] ${message}`);
+    }
+  });
+} catch (e) {
+  // ignore
+}
+
 // --- Patch RTCSessionDescription.sdp to be writable ---
 
 const RTCSessionDescriptionCtor = (ndcPolyfill as any).RTCSessionDescription;
