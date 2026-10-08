@@ -1796,13 +1796,13 @@ export class VoiceSession {
             }
             return;
           }
-          if (audio.retained) {
-            // Realtime pacing (2026-10-07 23:3x): do NOT blast the chunk —
-            // the canonical log (turn.chunks) is the queue; the pace timer
-            // sends at realtime. Kick the pump if idle (first chunk primes
-            // TTS_PACE_START_DELAY_MS before the first send).
-            this.ensureTtsPacePump(token);
-            return;
+          // Direct delivery: send chunk straight to the data channel as it arrives from ElevenLabs.
+          // Hardware buffering (512KB PSRAM) and 2.0s pre-roll cushion on the client handle jitter naturally.
+          if (this.sampleRateForTts === STT_SAMPLE_RATE) {
+            this.sendBinary(new Uint8Array(audio.chunk));
+          } else {
+            const resampled = resamplePcm(Buffer.from(audio.chunk), TTS_SAMPLE_RATE, STT_SAMPLE_RATE);
+            this.sendBinary(new Uint8Array(resampled));
           }
           // Replay retention overflow must not cut off live connected
           // data-channel audio; only reconnect replay is dropped.
@@ -1819,18 +1819,6 @@ export class VoiceSession {
           if (!this.isTurnActive(token)) return;
           this.markTtsAudioComplete(token);
           if (!useTrack || !this.audioSource) {
-            // Paced data-channel path: if the pace pump still has unsent
-            // chunks, defer ttsDone until the pump drains its backlog.
-            if (this.ttsPaceTimer && this.ttsPaceToken === token) {
-              // Generation done while pump still draining: ARM the flag so
-              // the pump fires completeTtsTurn('tts_pace_done') when the
-              // backlog empties. v2 bug (10-08 10:00 field: Pi stuck in TTS
-              // play after audio finished): early-return without arming →
-              // pump drain saw ttsPaceDonePending=false → tts.done never
-              // sent → phone waits forever after playback.
-              this.ttsPaceDonePending = true;
-              return;
-            }
             this.completeTtsTurn('tts_done');
             return;
           }
