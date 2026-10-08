@@ -756,6 +756,7 @@ export class VoiceSession {
     this.armConnectionTimeout(peer, remoteId);
 
     peer.on('signal', (data) => {
+      console.log(`[voice ${this.roomId}] OUTBOUND SIGNAL: ${(data as any)?.type ?? ((data as any)?.candidate ? 'candidate ' + (data as any).candidate.slice(0, 50) : '?')}`);
       if (this.peer !== peer || this.remoteId !== remoteId) return;
       // ICE-lite munge DISABLED (2026-10-08 11:5x): on 1.5.6 a=ice-lite makes
       // libpeer's CONTROLLING agent INITIATE (board sent its own offers —
