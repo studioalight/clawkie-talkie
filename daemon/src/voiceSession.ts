@@ -275,6 +275,14 @@ export class VoiceSession {
   private ttsPaceToken: number | null = null;
   private ttsPaceCursor = 0; // next canonical chunk index to send live
   private ttsPaceBudget = 0; // send bytes currently allowed (grows at realtime)
+  // TTS field-timing diagnostics (2026-10-08 11:0x): lab tests exonerated the
+  // API (4x realtime), resampler (3.8x), board (767e4cf) — but field turns
+  // still stall. Instrument the live pump→send path to name the layer.
+  private ttsDiagStartedAt: number | null = null;
+  private ttsDiagSentCount = 0;
+  private ttsDiagLastSendAt = 0;
+  private ttsDiagLastTickAt = 0;
+  private ttsDiagStarvedLogged = false;
   private ttsPaceDonePending = false; // generation done; tts waits for pump to drain
   private recentSessionsInterval: NodeJS.Timeout | null = null;
   private readonly replacedRemoteIds = new Set<string>();
@@ -1498,7 +1506,23 @@ export class VoiceSession {
     this.ttsPaceToken = token;
     const turn = this.ttsAudioTurn;
     if (turn) this.ttsPaceCursor = turn.liveDataCursor;
+    // Diag reset (field timing instrumentation, live pump→send path)
+    this.ttsDiagStartedAt = Date.now();
+    this.ttsDiagSentCount = 0;
+    this.ttsDiagLastSendAt = this.ttsDiagStartedAt;
+    this.ttsDiagLastTickAt = this.ttsDiagStartedAt;
+    this.ttsDiagStarvedLogged = false;
+    console.log(`[voice ${this.roomId}] [tts-diag] pump start t=${this.ttsDiagStartedAt}`);
     this.ttsPaceTimer = setInterval(() => {
+      const now = Date.now();
+      const tickDelay = this.ttsDiagLastTickAt ? now - this.ttsDiagLastTickAt : 0;
+      this.ttsDiagLastTickAt = now;
+      // Event-loop stall: ticks were scheduled every TTS_PACE_TICK_MS; big
+      // delays here mean the NODE EVENT LOOP was blocked (not the transport).
+      if (tickDelay > TTS_PACE_TICK_MS * 5) {
+        const backlogNow = (this.ttsAudioTurn?.chunks.length ?? 0) - this.ttsPaceCursor;
+        console.warn(`[voice ${this.roomId}] [tts-diag] EVENT LOOP STALL ${tickDelay}ms between ticks (backlog ${backlogNow}, budget ${this.ttsPaceBudget})`);
+      }
       if (this.ttsPaceToken !== token || !this.isTurnActive(token)) {
         this.stopTtsPacePump();
         return;
@@ -1519,11 +1543,20 @@ export class VoiceSession {
       );
       while (this.ttsPaceCursor < t.chunks.length) {
         const chunk = t.chunks[this.ttsPaceCursor];
-        if (chunk.byteLength > this.ttsPaceBudget) break;
+        if (chunk.byteLength > this.ttsPaceBudget) {
+          // Starved: backlog exists but budget too small TO SEND (not an
+          // error in itself — log once per turn at severity).
+          if (!this.ttsDiagStarvedLogged) {
+            console.warn(`[voice ${this.roomId}] [tts-diag] starved tick: backlog=${t.chunks.length - this.ttsPaceCursor} budget=${this.ttsPaceBudget} chunk=${chunk.byteLength}`);
+            this.ttsDiagStarvedLogged = true;
+          }
+          break;
+        }
         const chunkToSend = this.sampleRateForTts === STT_SAMPLE_RATE
           ? chunk
           : resamplePcm(chunk, TTS_SAMPLE_RATE, STT_SAMPLE_RATE);
         if (!this.sendBinary(new Uint8Array(chunkToSend))) {
+          console.error(`[voice ${this.roomId}] [tts-diag] sendBinary FAILED chunk #${this.ttsPaceCursor}`);
           if (t.started) {
             this.abandonTtsAudioTurn(token);
           } else {
@@ -1539,10 +1572,20 @@ export class VoiceSession {
         this.markTtsAudioStarted(token);
         this.ttsPaceBudget -= chunk.byteLength;
         this.ttsPaceCursor += 1;
+        const sendAt = Date.now();
+        const sendGap = sendAt - this.ttsDiagLastSendAt;
+        this.ttsDiagLastSendAt = sendAt;
+        this.ttsDiagSentCount += 1;
+        // Gap between sends > 3s: the FIELD stall signature — name whether
+        // backlog was available (transport/board slow) or empty (starved).
+        if (sendGap > 3000) {
+          console.warn(`[voice ${this.roomId}] [tts-diag] SEND GAP ${sendGap}ms before chunk #${this.ttsDiagSentCount} (backlog after=${t.chunks.length - this.ttsPaceCursor}, budget after=${this.ttsPaceBudget})`);
+        }
         t.liveDataCursor = this.ttsPaceCursor; // keep reconnect-replay cursor in sync
       }
       if (this.ttsPaceCursor >= t.chunks.length && t.complete) {
         this.stopTtsPacePump();
+        console.log(`[voice ${this.roomId}] [tts-diag] pump drain complete: sent=${this.ttsDiagSentCount} elapsed=${Date.now() - (this.ttsDiagStartedAt ?? Date.now())}ms`);
         if (this.ttsPaceDonePending) {
           this.ttsPaceDonePending = false;
           this.completeTtsTurn('tts_pace_done');
