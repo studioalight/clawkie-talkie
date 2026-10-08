@@ -755,18 +755,15 @@ export class VoiceSession {
 
     peer.on('signal', (data) => {
       if (this.peer !== peer || this.remoteId !== remoteId) return;
-      // Wire-level ice-lite munge (see SimplePeer construction note):
-      // only offers — answers must not claim lite. Idempotent guard.
-      if (
-        (data as { type?: string }).type === 'offer' &&
-        typeof (data as { sdp?: string }).sdp === 'string' &&
-        !(data as { sdp: string }).sdp.includes('a=ice-lite')
-      ) {
-        (data as { sdp: string }).sdp = (data as { sdp: string }).sdp.replace(
-          /^m=/m,
-          'a=ice-lite\r\nm=',
-        );
-      }
+      // ICE-lite munge DISABLED (2026-10-08 11:5x): on 1.5.6 a=ice-lite makes
+      // libpeer's CONTROLLING agent INITIATE (board sent its own offers —
+      // daemon dropped them, every session timed out, serial 11:49-11:52).
+      // On direct LAN pairing both agents are full and both send paths work
+      // (PeerBinding recv → Send binding response in every boot) — the
+      // munge only forced harmful role games. It was a workaround for the
+      // TURN-relay recv defect (#208); if remote-wifi relay pairing needs
+      // it again, re-enable behind an env flag instead.
+      // (block removed — offers now go out un-munged)
       void this.signalClient
         .sendSignal(remoteId, data as unknown as SignalData)
         .catch((err) => {
