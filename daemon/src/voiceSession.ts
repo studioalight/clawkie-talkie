@@ -62,11 +62,12 @@ const MAX_BUFFERED_TTS_TURN_BYTES = 64 * 1024 * 1024;
 // buffer immediately, then audio arrives at TTS_PACE_RATE (>1.0x realtime)
 // so its buffer stays ~1.5s deep: never starves, never overflows the 2s
 // ring (drop-incoming guards the worst case).
-const TTS_PACE_TICK_MS = 100;
-const TTS_PACE_BYTES_PER_TICK = 3200; // 100ms of 16kHz mono PCM16 per tick
-const TTS_PACE_LOOKAHEAD_BYTES = 32000; // budget cap (~1s)
-const TTS_PACE_HEADSTART_BYTES = 6400; // cushion: 2 chunks (200ms) — bulk bursts broke esp_peer (11:28: 24 chunks/1.35s → board held them 67s)
-const TTS_PACE_RATE = 1.0; // steady drip: field-proven shape (10:06/11:16 turns played fine; bursts choked the board)
+const TTS_PACE_TICK_MS = 40;
+const TTS_PACE_BYTES_PER_TICK = 1280; // 40ms of 16kHz mono PCM16 per tick (fits Ethernet MTU)
+const TTS_PACE_LOOKAHEAD_BYTES = 12800; // budget cap (~400ms)
+const TTS_PACE_HEADSTART_BYTES = 2560; // cushion: 2 chunks (80ms)
+const TTS_PACE_RATE = 1.0;
+const MAX_SCTP_BUFFERED_AMOUNT = 2560; // Backpressure: pause if SCTP send buffer has >=2 in-flight MTU chunks
 
 export interface VoiceSessionConfig {
   roomId: string;
@@ -1553,6 +1554,12 @@ export class VoiceSession {
         TTS_PACE_LOOKAHEAD_BYTES,
       );
       while (this.ttsPaceCursor < t.chunks.length) {
+        // Backpressure check against SCTP send buffer to prevent RTO congestion collapse
+        const rawChannel = (this.peer as any)?._channel;
+        const buffered = typeof rawChannel?.bufferedAmount === 'number' ? rawChannel.bufferedAmount : 0;
+        if (buffered >= MAX_SCTP_BUFFERED_AMOUNT) {
+          break; // Let SCTP drain and ACK before stuffing more chunks
+        }
         const chunk = t.chunks[this.ttsPaceCursor];
         if (chunk.byteLength > this.ttsPaceBudget) {
           // Starved: backlog exists but budget too small TO SEND (not an
