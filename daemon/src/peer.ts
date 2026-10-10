@@ -696,6 +696,31 @@ export class DaemonPeer {
       ...(deviceId ? { deviceId } : {}),
     });
 
+    // One live voice room per device lane (fix 2026-10-10, "messed up transfer"):
+    // a stale boot-era join previously left TWO rooms for the same ESP32
+    // (Room 1 without key + Room 2 after rehome). Switchboard fan-out then
+    // delivered conflicting switches into both, and a re-join into the stale
+    // room reused its dead peer (accept send failed, device hung). A device
+    // with an explicit device lane has exactly one room: close competing
+    // lanes AND recreate the target room fresh on every join.
+    const deviceLane = roomId.split('~')[1];
+    if (deviceLane) {
+      for (const [candidateId, candidate] of this.voiceSessions) {
+        if (candidateId === roomId) continue;
+        if (candidateId.split('~')[1] === deviceLane) {
+          console.error(`[peer] device lane ${deviceLane}: closing competing room ${candidateId} (join targets ${roomId})`);
+          this.voiceSessions.delete(candidateId);
+          try { candidate.close(); } catch { /* ignore */ }
+        }
+      }
+      const stale = this.voiceSessions.get(roomId);
+      if (stale) {
+        console.error(`[peer] device lane ${deviceLane}: recreating room ${roomId} fresh on rejoin`);
+        this.voiceSessions.delete(roomId);
+        try { stale.close(); } catch { /* ignore */ }
+      }
+    }
+
     if (!this.ensureVoiceSessionCapacityFor(roomId)) {
       this.sendRendezvous(rp, daemonToPhone.rendezvousError('too_many_voice_sessions'));
       return;
