@@ -160,6 +160,23 @@ export class DaemonPeer {
 
     this.signalClient.on('signal', (event) => {
       const payload = event.data as SignalPayload;
+      // ESP32 boot fix (2026-10-10): the board declares its session via a
+      // signaling-lane (SSE) rendezvous.join immediately when the rendezvous
+      // peer is created. Its data-channel join is only sent after WebRTC
+      // pairing (~19s), which always loses the race to the 2s auto-create
+      // fallback — silently binding every board room to a freshly generated
+      // webchat session instead of the configured one (field-observed:
+      // ghost rooms f5a16c62, 75547248). Route a signaling-lane join through
+      // the same rendezvous.join processor as a data-channel join.
+      if (payload && typeof payload === 'object' && (payload as { t?: unknown }).t === 'rendezvous.join') {
+        const rp = this.rendezvousPeers.get(event.from);
+        if (rp) {
+          this.handleRendezvousData(rp, JSON.stringify(payload));
+        } else {
+          console.error(`[peer] signaling rendezvous.join from ${event.from} ignored (no live rendezvous peer)`);
+        }
+        return;
+      }
       const existing = this.rendezvousPeers.get(event.from);
       const livePeer = !!existing && !existing.peer.destroyed;
       const kind = classifySignal(payload);
