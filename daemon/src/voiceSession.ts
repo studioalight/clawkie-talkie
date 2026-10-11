@@ -1379,6 +1379,7 @@ export class VoiceSession {
       const result = await runChat(trimmed, {
         signal: this.chatAbort.signal,
         sessionId: target.sessionId,
+        originRoomId: this.roomId,
         ...(target.sessionKey ? { sessionKey: target.sessionKey } : {}),
         ...(target.channel ? { channel: target.channel } : {}),
         ...(target.target ? { target: target.target } : {}),

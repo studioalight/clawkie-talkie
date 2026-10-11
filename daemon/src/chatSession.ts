@@ -380,16 +380,35 @@ async function runOpenClawTurn(opts: {
   accountId?: string;
   delivery?: DeliveryTarget;
   deliver?: boolean;
+  /** Voice room the turn originated from (roomId …~<peerId>). Rides the
+   *  agent prompt so switchboard commands can be scoped to this device. */
+  originRoomId?: string;
   signal?: AbortSignal;
 }): Promise<string> {
-  const message = buildAgentTurnMessage(opts.userText);
+  const message = buildAgentTurnMessage(opts.userText, opts.originRoomId);
   const sessionId = await resolveOpenClawAgentSessionId(opts.sessionId);
-  const shouldDeliver = opts.deliver !== false;
+  let shouldDeliver = opts.deliver !== false;
   const resolvedSessionKey = await resolveAgentSessionKeyMetadata({ ...opts, requireLookup: shouldDeliver });
   const agentId = deriveAgentIdFromSessionKey(resolvedSessionKey) ?? 'main';
+  // Room-1 delivery fix (2026-10-11): voice rooms that joined without a
+  // sessionKey (e.g. the ESP board's boot join) decide delivery BEFORE the
+  // key exists, so 'no channel' read as 'must deliver' and the turn threw
+  // openclaw_delivery_unresolved. Re-evaluate with the RESOLVED key:
+  // dashboard/node keys have no external reply target by design (the reply
+  // goes back over TTS). Callers that explicitly asked for a channel/target
+  // (opts.channel/target/delivery) are untouched — those still fail loudly.
+  if (shouldDeliver && !opts.channel && !opts.target && !opts.delivery) {
+    const key = resolvedSessionKey || opts.sessionKey;
+    if (key) {
+      shouldDeliver = shouldDeliverReplyForChatTarget({ sessionId: opts.sessionId, sessionKey: key });
+    }
+  }
   const replyTarget = shouldDeliver ? await resolveAgentReplyTarget({ ...opts, resolvedSessionKey, requireLookup: shouldDeliver }) : undefined;
   if (shouldDeliver && !replyTarget) {
     throw new ChatError('openclaw_delivery_unresolved', 'openclaw_delivery_unresolved');
+  }
+  if (!shouldDeliver) {
+    console.log(`[chat] session=${opts.sessionId} key=${resolvedSessionKey ?? '(none)'} — no resolvable reply channel; reply returns over TTS only`);
   }
   // Thread-addressed targets (Slack thread ts) cannot ride the agent
   // CLI's `--reply-to <target>` route — the thread id is not a target —
@@ -779,8 +798,11 @@ function isMissingFileError(err: unknown): boolean {
   return Boolean(err && typeof err === 'object' && (err as { code?: unknown }).code === 'ENOENT');
 }
 
-export function buildAgentTurnMessage(userText: string): string {
-  return `${RAW_STT_GUIDANCE}\n\n<raw-stt-transcript>\n${userText}\n</raw-stt-transcript>\n\n${VOICE_REPLY_GUIDANCE}`;
+export function buildAgentTurnMessage(userText: string, originRoomId?: string): string {
+  const roomLine = originRoomId?.trim()
+    ? `\n\nOrigin voice room: ${originRoomId.trim()} — when you run a switchboard voice-control command (session switch / line switch), include this as the "roomId" field so it is scoped to this device only (multi-device rooms must not fan out).`
+    : '';
+  return `${RAW_STT_GUIDANCE}\n\n<raw-stt-transcript>\n${userText}\n</raw-stt-transcript>\n\n${VOICE_REPLY_GUIDANCE}${roomLine}`;
 }
 
 
@@ -864,6 +886,7 @@ export interface ChatOptionsWithSession extends ChatOptions {
   target?: string;
   accountId?: string;
   delivery?: DeliveryTarget;
+  originRoomId?: string;
 }
 
 export async function runChat(userText: string, opts: ChatOptionsWithSession): Promise<ChatResult> {
@@ -903,6 +926,7 @@ export async function runChat(userText: string, opts: ChatOptionsWithSession): P
       accountId,
       delivery: opts.delivery,
       deliver: opts.deliver,
+      originRoomId: opts.originRoomId,
       signal: opts.signal,
     });
 

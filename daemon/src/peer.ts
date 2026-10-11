@@ -305,10 +305,19 @@ export class DaemonPeer {
   /** Queue a line switch for after the current TTS turn (voice control
    *  port — switchboard operator model). Raw line-name pass-through; the
    *  phone's address book owns the lookup. */
-  requestLineSwitch(sessionId: string, line: string): { ok: boolean; applied?: number; error?: string; detail?: string } {
+  requestLineSwitch(sessionId: string, line: string, roomId?: string): { ok: boolean; applied?: number; error?: string; detail?: string } {
     const wanted = sessionId.trim();
-    const targets = wanted ? this.sessionsFor(wanted) : [...this.voiceSessions.values()];
-    if (targets.length === 0) {
+    // roomId scopes the switch to one device's room (multi-device fix 2026-10-11):
+    // every room id ends in `~<peerId>` (peer.ts device-lane cleanup), so an
+    // exact room match IS a device match. Absent = legacy fan-out (back-compat).
+    let targets = wanted ? this.sessionsFor(wanted) : [...this.voiceSessions.values()];
+    if (roomId && roomId.trim()) {
+      const want = roomId.trim();
+      targets = targets.filter((s) => s.roomId === want);
+      if (targets.length === 0) {
+        return { ok: false, error: 'no_client', detail: 'no active voice room for room ' + want };
+      }
+    } else if (targets.length === 0) {
       return { ok: false, error: 'no_client', detail: 'no active voice room' + (wanted ? ' for session ' + wanted : '') };
     }
     for (const session of targets) session.requestLineSwitch(line);
@@ -318,10 +327,19 @@ export class DaemonPeer {
   /** Session switch (same shape as requestLineSwitch): re-aim the phone at a
    *  different session on this shore. sessionKey optional — rides the message
    *  so the next join needs no gateway lookup. */
-  requestSessionSwitch(sessionId: string, session: string, sessionKey?: string): { ok: boolean; applied?: number; error?: string; detail?: string } {
+  requestSessionSwitch(sessionId: string, session: string, sessionKey?: string, roomId?: string): { ok: boolean; applied?: number; error?: string; detail?: string } {
     const wanted = sessionId.trim();
-    const targets = wanted ? this.sessionsFor(wanted) : [...this.voiceSessions.values()];
-    if (targets.length === 0) {
+    // roomId scopes the switch to one device's room (multi-device fix 2026-10-11,
+    // "the Pi got transferred instead of the ESP"): room id ends in `~<peerId>`,
+    // so an exact room match IS a device match. Absent = legacy fan-out.
+    let targets = wanted ? this.sessionsFor(wanted) : [...this.voiceSessions.values()];
+    if (roomId && roomId.trim()) {
+      const want = roomId.trim();
+      targets = targets.filter((s) => s.roomId === want);
+      if (targets.length === 0) {
+        return { ok: false, error: 'no_client', detail: 'no active voice room for room ' + want };
+      }
+    } else if (targets.length === 0) {
       return { ok: false, error: 'no_client', detail: 'no active voice room' + (wanted ? ' for session ' + wanted : '') };
     }
     for (const s of targets) s.requestSessionSwitch(session, sessionKey);

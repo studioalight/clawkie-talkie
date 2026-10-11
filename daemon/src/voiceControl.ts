@@ -47,7 +47,7 @@ export function startVoiceControl(peer: DaemonPeer, socketPath = process.env.CLA
       if (nl < 0) return;
       const line = buf.slice(0, nl);
       buf = '';
-      let cmd: { sessionId?: string; voiceId?: string; model?: string; reset?: boolean; gainDb?: number; adjustDb?: number; line?: string; session?: string; sessionKey?: string };
+      let cmd: { sessionId?: string; voiceId?: string; model?: string; reset?: boolean; gainDb?: number; adjustDb?: number; line?: string; session?: string; sessionKey?: string; roomId?: string };
       try {
         cmd = JSON.parse(line);
       } catch {
@@ -63,6 +63,7 @@ export function startVoiceControl(peer: DaemonPeer, socketPath = process.env.CLA
       const switchLine = typeof cmd.line === 'string' ? cmd.line.trim() : '';
       const switchSession = typeof cmd.session === 'string' ? cmd.session.trim() : '';
       const switchSessionKey = typeof cmd.sessionKey === 'string' ? cmd.sessionKey.trim() : '';
+      const switchRoomId = typeof cmd.roomId === 'string' ? cmd.roomId.trim() : '';
       if (!reset && !voiceId && !hasGain && !hasAdjust && !switchLine && !switchSession) {
         sock.end(JSON.stringify({ ok: false, error: 'missing_voice_id_or_gain' }) + '\n');
         return;
@@ -82,13 +83,17 @@ export function startVoiceControl(peer: DaemonPeer, socketPath = process.env.CLA
       }
       if (switchLine) {
         // Switchboard: queue the re-home for after the current turn.
-        const lr = peer.requestLineSwitch(sessionId, switchLine);
+        // roomId (optional) scopes to one device — multi-device rooms fan out
+        // otherwise and a sibling device can swallow the switch.
+        const lr = peer.requestLineSwitch(sessionId, switchLine, switchRoomId || undefined);
         if (!lr.ok) errors.push('line: ' + (lr.error ?? 'failed'));
         else applied = Math.max(applied, lr.applied ?? 0);
       }
       if (switchSession) {
         // Session switch: re-aim the phone at another session on this shore.
-        const sr = peer.requestSessionSwitch(sessionId, switchSession, switchSessionKey || undefined);
+        // roomId (optional) scopes to one device — multi-device rooms fan out
+        // otherwise and a sibling device can swallow the switch.
+        const sr = peer.requestSessionSwitch(sessionId, switchSession, switchSessionKey || undefined, switchRoomId || undefined);
         if (!sr.ok) errors.push('session: ' + (sr.error ?? 'failed'));
         else applied = Math.max(applied, sr.applied ?? 0);
       }
