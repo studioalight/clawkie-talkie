@@ -1904,6 +1904,26 @@ export class VoiceSession {
     this.audioPumpAwaitingDone = false;
     this.chatAbort?.abort();
     this.chatAbort = null;
+
+    // Switchboard (2026-10-11): resetTurn also runs on ERROR paths (reply_error,
+    // empty_transcript, …). completeTtsTurn flushes the queued switches only on
+    // the success path, so a turn that died mid-flight stranded the queued
+    // switch forever — field case 17:01:54: 'Session switch queued → 669a…'
+    // never delivered, phone stuck in Room 2. Flush here for every path that
+    // ends a turn; completeTtsTurn's flush runs first on success, so this is
+    // the catch-all. Peer/connected guards match the success-path delivery.
+    if (this.pendingSessionSwitch && this.connected && this.peer && !this.peer.destroyed) {
+      const sw = this.pendingSessionSwitch;
+      this.pendingSessionSwitch = null;
+      console.log(`[voice ${this.roomId}] Delivering queued session switch (resetTurn/${reason}) → ${sw.session}`);
+      this.sendToPeer(this.peer, daemonToPhone.sessionSwitch(sw.session, sw.sessionKey));
+    }
+    if (this.pendingLineSwitch && this.connected && this.peer && !this.peer.destroyed) {
+      const line = this.pendingLineSwitch;
+      this.pendingLineSwitch = null;
+      console.log(`[voice ${this.roomId}] Delivering queued line switch (resetTurn/${reason}) → ${line}`);
+      this.sendToPeer(this.peer, daemonToPhone.lineSwitch(line));
+    }
   }
 
   private send(msg: DaemonToPhone): void {
