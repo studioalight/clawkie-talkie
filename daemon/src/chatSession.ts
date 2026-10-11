@@ -32,6 +32,14 @@ import type { ChatOptions, ChatResult } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
+// Voice turns must stay responsive: the agent CLI's own --timeout defaults to
+// 600s, and a field case (2026-10-11, Room-2 lane) hung a full 600s against a
+// sick gateway before dying with openclaw_gateway_unavailable — wedging the
+// phone's turn for 10 minutes and stranding the queued switchboard switch
+// behind it. Healthy voice turns complete in seconds (observed 3-20s), so
+// bound the voice path far tighter. Env-overridable for degraded gateways.
+const AGENT_TURN_TIMEOUT_SECONDS = Math.max(15, parseInt(process.env.AGENT_TURN_TIMEOUT_SECONDS ?? '120', 10) || 120);
+
 export interface ChatErrorDetails {
   rootMessage?: string;
   stderr?: string;
@@ -429,6 +437,7 @@ async function runOpenClawTurn(opts: {
         ]
       : []),
     '--json',
+    '--timeout', String(AGENT_TURN_TIMEOUT_SECONDS),
     '-m', message,
   ];
 
