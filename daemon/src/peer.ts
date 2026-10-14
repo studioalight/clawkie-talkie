@@ -493,7 +493,16 @@ export class DaemonPeer {
         ...(this.opts.newSessionDiscordDestinationsProvider ? { newSessionDiscordDestinationsProvider: this.opts.newSessionDiscordDestinationsProvider } : {}),
         ...(this.opts.newSessionSlackDestinationsProvider ? { newSessionSlackDestinationsProvider: this.opts.newSessionSlackDestinationsProvider } : {}),
         ...(this.opts.newSessionCreateResponder ? { newSessionCreateResponder: this.opts.newSessionCreateResponder } : {}),
-        onClose: (id) => { this.voiceSessions.delete(id); },
+        onClose: (id) => {
+          const dying = this.voiceSessions.get(id);
+          const carried = dying?.takePendingSessionSwitch();
+          if (carried) {
+            const dl = id.split('~')[1];
+            if (dl) this.lanePendingSwitches.set(dl, carried);
+            console.log(`[peer] device lane ${dl}: onClose salvaged pending switch → ${carried.session}`);
+          }
+          this.voiceSessions.delete(id);
+        },
       });
       this.voiceSessions.set(roomId, voiceSession);
       rp.joined = true;
@@ -562,7 +571,16 @@ export class DaemonPeer {
           ...(this.opts.newSessionDiscordDestinationsProvider ? { newSessionDiscordDestinationsProvider: this.opts.newSessionDiscordDestinationsProvider } : {}),
           ...(this.opts.newSessionSlackDestinationsProvider ? { newSessionSlackDestinationsProvider: this.opts.newSessionSlackDestinationsProvider } : {}),
           ...(this.opts.newSessionCreateResponder ? { newSessionCreateResponder: this.opts.newSessionCreateResponder } : {}),
-          onClose: (id) => { this.voiceSessions.delete(id); },
+          onClose: (id) => {
+          const dying = this.voiceSessions.get(id);
+          const carried = dying?.takePendingSessionSwitch();
+          if (carried) {
+            const dl = id.split('~')[1];
+            if (dl) this.lanePendingSwitches.set(dl, carried);
+            console.log(`[peer] device lane ${dl}: onClose salvaged pending switch → ${carried.session}`);
+          }
+          this.voiceSessions.delete(id);
+        },
         });
         this.voiceSessions.set(roomId, voiceSession);
         rp.joined = true;
@@ -797,6 +815,13 @@ export class DaemonPeer {
           ? { newSessionCreateResponder: this.opts.newSessionCreateResponder }
           : {}),
         onClose: (id) => {
+          const dying = this.voiceSessions.get(id);
+          const carried = dying?.takePendingSessionSwitch();
+          if (carried) {
+            const dl = id.split('~')[1];
+            if (dl) this.lanePendingSwitches.set(dl, carried);
+            console.log(`[peer] device lane ${dl}: onClose salvaged pending switch → ${carried.session}`);
+          }
           this.voiceSessions.delete(id);
         },
       });
