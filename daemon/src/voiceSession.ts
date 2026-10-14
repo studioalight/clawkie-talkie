@@ -546,6 +546,19 @@ export class VoiceSession {
     }
   }
 
+  /** Device-lane salvage (2026-10-14): hand off a pending switch before the
+   *  room is closed by lane hygiene — the queue otherwise dies with the room
+   *  and the board never rehomes. Idempotent. */
+  takePendingSessionSwitch(): { session: string; sessionKey?: string } | null {
+    const sw = this.pendingSessionSwitch;
+    this.pendingSessionSwitch = null;
+    if (this.pendingSwitchGuard) {
+      clearTimeout(this.pendingSwitchGuard);
+      this.pendingSwitchGuard = null;
+    }
+    return sw;
+  }
+
   /** Phantom-turn guard (2026-10-14, AMOLED deep rest): the 20:52 switch
    *  queued behind a turnInFlight that had no TTS session and no agent turn
    *  running — a turn that could never complete, so the switch waited

@@ -125,6 +125,9 @@ export class DaemonPeer {
 
   private rendezvousPeers = new Map<string, RendezvousPeer>();
   private voiceSessions = new Map<string, VoiceSession>();
+  /** Device-lane-level pending switchboard switches (2026-10-14): survive
+   *  room recreation — see the salvage logic in the join path. */
+  private lanePendingSwitches = new Map<string, { session: string; sessionKey?: string }>();
   private pendingCandidates = new Map<string, SignalPayload[]>();
 
   constructor(private readonly opts: DaemonPeerOptions) {
@@ -714,6 +717,11 @@ export class DaemonPeer {
       ...(deviceId ? { deviceId } : {}),
     });
 
+    // Pending switchboard switches now survive room recreation (2026-10-14):
+    // they were per-room VoiceSession state, and the device-lane hygiene below
+    // closes the room mid-flight — the queued switch died with it (field case
+    // 21:48: "queued -> lane recreate -> queue gone -> board never rehomed").
+    // The lane-level PendingSwitch carries it into the fresh room.
     // One live voice room per device lane (fix 2026-10-10, "messed up transfer"):
     // a stale boot-era join previously left TWO rooms for the same ESP32
     // (Room 1 without key + Room 2 after rehome). Switchboard fan-out then
@@ -723,10 +731,16 @@ export class DaemonPeer {
     // lanes AND recreate the target room fresh on every join.
     const deviceLane = roomId.split('~')[1];
     if (deviceLane) {
+      let salvaged: { session: string; sessionKey?: string } | null = null;
       for (const [candidateId, candidate] of this.voiceSessions) {
         if (candidateId === roomId) continue;
         if (candidateId.split('~')[1] === deviceLane) {
           console.error(`[peer] device lane ${deviceLane}: closing competing room ${candidateId} (join targets ${roomId})`);
+          const carried = candidate.takePendingSessionSwitch();
+          if (carried) {
+            salvaged = carried;
+            console.error(`[peer] device lane ${deviceLane}: salvaged pending switch → ${carried.session} from closing room`);
+          }
           this.voiceSessions.delete(candidateId);
           try { candidate.close(); } catch { /* ignore */ }
         }
@@ -734,8 +748,16 @@ export class DaemonPeer {
       const stale = this.voiceSessions.get(roomId);
       if (stale) {
         console.error(`[peer] device lane ${deviceLane}: recreating room ${roomId} fresh on rejoin`);
+        const carried = stale.takePendingSessionSwitch();
+        if (carried) {
+          salvaged = carried;
+          console.error(`[peer] device lane ${deviceLane}: salvaged pending switch → ${carried.session} from recreated room`);
+        }
         this.voiceSessions.delete(roomId);
         try { stale.close(); } catch { /* ignore */ }
+      }
+      if (salvaged && !this.lanePendingSwitches.has(deviceLane)) {
+        this.lanePendingSwitches.set(deviceLane, salvaged);
       }
     }
 
@@ -779,11 +801,29 @@ export class DaemonPeer {
         },
       });
       this.voiceSessions.set(roomId, session);
+      // Lane-carried switch (2026-10-14): if the device-lane salvage above
+      // preserved a pending session switch from a room that was just closed,
+      // deliver it into the fresh session once it connects-ish (queued state
+      // machine handles the in-flight gating exactly like a fresh request).
+      const carried = deviceLane ? this.lanePendingSwitches.get(deviceLane) : undefined;
+      if (carried) {
+        this.lanePendingSwitches.delete(deviceLane);
+        console.log(`[peer] device lane ${deviceLane}: delivering lane-carried switch → ${carried.session} into fresh room`);
+        session.requestSessionSwitch(carried.session, carried.sessionKey);
+      }
     } else {
       // A returning phone may have changed its TTS/STT preference between
       // joins. Omitted settings on an existing session mean local Default,
       // so clear any explicit hints retained by the daemon.
       existingSession.applyVoiceSettings(msg.settings ?? {});
+      // Same delivery for a returning phone into an existing room (lane
+      // salvage can also target an already-live room on quick rejoin).
+      const carried = deviceLane ? this.lanePendingSwitches.get(deviceLane) : undefined;
+      if (carried) {
+        this.lanePendingSwitches.delete(deviceLane);
+        console.log(`[peer] device lane ${deviceLane}: delivering lane-carried switch → ${carried.session} into returning room`);
+        existingSession.requestSessionSwitch(carried.session, carried.sessionKey);
+      }
     }
 
     this.sendRendezvous(rp, daemonToPhone.rendezvousAccept(roomId));
