@@ -555,9 +555,20 @@ export class VoiceSession {
    *  when the switch was already delivered or a real turn is active. */
   private deliverPendingSwitchIfPhantom(): void {
     this.pendingSwitchGuard = null;
-    if (!this.pendingSessionSwitch) return;
-    if (this.tts || this.chatAbort) return;              // a real turn is alive
-    if (!this.connected || !this.peer || this.peer.destroyed) return;
+    if (!this.pendingSessionSwitch) {
+      console.log(`[voice ${this.roomId}] phantom guard: settled — switch already delivered`);
+      return;
+    }
+    if (this.tts || this.chatAbort) {
+      console.log(`[voice ${this.roomId}] phantom guard: real turn alive (tts=${!!this.tts} chat=${!!this.chatAbort}) — retry armed`);
+      this.pendingSwitchGuard = setTimeout(() => this.deliverPendingSwitchIfPhantom(), PHANTOM_SWITCH_GRACE_MS);
+      this.pendingSwitchGuard.unref?.();
+      return;
+    }
+    if (!this.connected || !this.peer || this.peer.destroyed) {
+      console.log(`[voice ${this.roomId}] phantom guard: peer gone (connected=${this.connected}) — dropping guard, delivery on next join`);
+      return;
+    }
     const sw = this.pendingSessionSwitch;
     this.pendingSessionSwitch = null;
     this.state.resetTurn();                               // clear the phantom turnInFlight
