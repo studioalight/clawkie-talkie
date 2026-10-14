@@ -839,6 +839,22 @@ export class VoiceSession {
       console.error(`[voice ${this.roomId}] data channel connected`);
       this.startKeepalive();
       this.sendCatchUpSnapshot(peer);
+      // Switch queue flush at data-channel open (2026-10-14 retention test):
+      // the board's channel takes ~15s to establish — OLDER than the 12s
+      // phantom-guard grace, so switches queued during that window bailed
+      // "peer gone" before the board ever heard them. The fresh channel is
+      // the natural delivery point: turnInFlight is false, board is listening.
+      const sw = this.takePendingSessionSwitch();
+      if (sw) {
+        console.log(`[voice ${this.roomId}] Delivering queued session switch (data-channel open) → ${sw.session}`);
+        this.sendToPeer(this.peer, daemonToPhone.sessionSwitch(sw.session, sw.sessionKey));
+      }
+      if (this.pendingLineSwitch) {
+        const line = this.pendingLineSwitch;
+        this.pendingLineSwitch = null;
+        console.log(`[voice ${this.roomId}] Delivering queued line switch (data-channel open) → ${line}`);
+        this.sendToPeer(this.peer, daemonToPhone.lineSwitch(line));
+      }
     });
 
     peer.on('data', (data: unknown) => {
