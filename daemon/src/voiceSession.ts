@@ -45,6 +45,11 @@ const MAX_BUFFERED_CANDIDATES_PER_PEER = 32;
 const RECENT_SESSIONS_SUBSCRIPTION_INTERVAL_MS = 60_000;
 const MAX_CONTROL_HISTORY_EVENTS = 128;
 const MAX_BUFFERED_TTS_TURN_BYTES = 64 * 1024 * 1024;
+
+// Deep-rest boards can hold a phantom turnInFlight (no TTS stream, no agent
+// turn) — a queued session switch then delivers after this grace instead of
+// waiting forever (2026-10-14, AMOLED deep-rest field case).
+const PHANTOM_SWITCH_GRACE_MS = 12_000;
 // Realtime pacing for data-channel TTS (2026-10-07 23:3x, rewritten 10-08): the ESP32 speaker
 // ring is only 2s (64KB @16kHz) and audio_pipeline_play runs in the esp_peer
 // recv callback — blasting ElevenLabs-produced chunks overruns it, blocks the
@@ -512,6 +517,10 @@ export class VoiceSession {
   // operator's confirmation is never cut off by its own command.
   private pendingLineSwitch: string | null = null;
   private pendingSessionSwitch: { session: string; sessionKey?: string } | null = null;
+  /** Phantom-turn guard: if the "current turn" never starts streaming TTS
+   *  nor runs the agent (deep-rest board with a stuck turnInFlight), the
+   *  queued switch would wait forever. One-shot timer per queue. */
+  private pendingSwitchGuard: NodeJS.Timeout | null = null;
 
   /** Session switch (operator model, mirror of line switch): re-aim the
    *  phone at a different session ON THIS SHORE without a restart — the
@@ -531,6 +540,29 @@ export class VoiceSession {
     }
     this.pendingSessionSwitch = sw;
     console.log(`[voice ${this.roomId}] Session switch queued → ${id} (after current turn)`);
+    if (!this.pendingSwitchGuard) {
+      this.pendingSwitchGuard = setTimeout(() => this.deliverPendingSwitchIfPhantom(), PHANTOM_SWITCH_GRACE_MS);
+      this.pendingSwitchGuard.unref?.();
+    }
+  }
+
+  /** Phantom-turn guard (2026-10-14, AMOLED deep rest): the 20:52 switch
+   *  queued behind a turnInFlight that had no TTS session and no agent turn
+   *  running — a turn that could never complete, so the switch waited
+   *  forever. If the queued switch is still pending after the grace and
+   *  neither a TTS stream nor an agent turn is alive, the turn is phantom:
+   *  reset the state machine and deliver immediately. Idempotent — no-ops
+   *  when the switch was already delivered or a real turn is active. */
+  private deliverPendingSwitchIfPhantom(): void {
+    this.pendingSwitchGuard = null;
+    if (!this.pendingSessionSwitch) return;
+    if (this.tts || this.chatAbort) return;              // a real turn is alive
+    if (!this.connected || !this.peer || this.peer.destroyed) return;
+    const sw = this.pendingSessionSwitch;
+    this.pendingSessionSwitch = null;
+    this.state.resetTurn();                               // clear the phantom turnInFlight
+    console.log(`[voice ${this.roomId}] Delivering queued session switch (phantom-turn guard) → ${sw.session}`);
+    this.sendToPeer(this.peer, daemonToPhone.sessionSwitch(sw.session, sw.sessionKey));
   }
 
   /** Queue a line switch for delivery when the current TTS turn completes.
