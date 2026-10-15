@@ -69,7 +69,7 @@ const PHANTOM_SWITCH_GRACE_MS = 12_000;
 // ring (drop-incoming guards the worst case).
 const TTS_PACE_TICK_MS = 40;
 const TTS_PACE_BYTES_PER_TICK = 1280; // 40ms of 16kHz mono PCM16 per tick (fits Ethernet MTU)
-const TTS_PACE_LOOKAHEAD_BYTES = 48000; // budget cap ~1.5s: must exceed the board's 16KB resume cushion (field 08:23: 12800 cap made "cushion rebuilt" unreachable)
+const TTS_PACE_LOOKAHEAD_BYTES = 96000; // budget cap ~3s (field 09:25 option 3: v3 generates ~0.5x realtime; deeper lookahead covers generation stalls so the board's 32KB resume cushion stays in range)
 const TTS_PACE_HEADSTART_BYTES = 38400; // cushion: 1.2s headstart matching ESP32 preroll buffer
 const TTS_PACE_RATE = 1.1; // 1.1x steady feed to sustain 1.2s buffer depth
 const MAX_SCTP_BUFFERED_AMOUNT = 64 * 1024; // 64KB cushion: prevents delayed-SACK micro-pauses while guarding against runaway
