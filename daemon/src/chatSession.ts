@@ -428,6 +428,16 @@ async function runOpenClawTurn(opts: {
     'agent',
     '--agent', agentId,
     '--session-id', sessionId,
+    // KEY-DRIFT ROOT FIX (field 22:51): pin the room's own session key on
+    // agent CLI turns — without it the gateway re-registers the session
+    // under agent:main:explicit:<id> after each voice turn, and a later
+    // session.switch carrying that key re-poisons the board's NVS (the
+    // device "drifted" into a phantom session). The resolved/room key is
+    // authoritative; explicit-channel keys are never pinned (they're the
+    // drift product themselves).
+    ...((resolvedSessionKey && !resolvedSessionKey.startsWith('agent:main:explicit:'))
+      ? ['--session-key', resolvedSessionKey]
+      : []),
     ...(shouldDeliver && replyTarget && !daemonPostsReply
       ? [
           '--deliver',
