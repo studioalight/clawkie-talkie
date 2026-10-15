@@ -332,6 +332,13 @@ export class DaemonPeer {
    *  so the next join needs no gateway lookup. */
   requestSessionSwitch(sessionId: string, session: string, sessionKey?: string, roomId?: string): { ok: boolean; applied?: number; error?: string; detail?: string } {
     const wanted = sessionId.trim();
+    // KEY-DRIFT GUARD (field 22:42): explicit:<sessionId> keys have no reply
+    // channel and poison the room. Reject them at the door, before queues
+    // and lane-salvage can carry them into fresh rooms.
+    if (sessionKey?.trim().startsWith('agent:main:explicit:')) {
+      console.warn(`[peer] session.switch carried an explicit-channel key — rejecting (key-drift guard)`);
+      sessionKey = undefined;
+    }
     // roomId scopes the switch to one device's room (multi-device fix 2026-10-11,
     // "the Pi got transferred instead of the ESP"): room id ends in `~<peerId>`,
     // so an exact room match IS a device match. Absent = legacy fan-out.

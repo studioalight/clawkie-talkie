@@ -533,6 +533,16 @@ export class VoiceSession {
     this.touchActivity();
     const id = session.trim();
     if (!id) return;
+    // KEY-DRIFT GUARD (field 22:42, "it created a new session again"): an
+    // explicit:<sessionId> key has no external reply channel — the gateway
+    // derives it from bare CLI agent turns and it poisons the board (every
+    // turn fails openclaw_delivery_unresolved, the room "drifts" and looks
+    // like a new session). Reject the key, keep the room's own binding;
+    // the switch still proceeds, delivery falls back to TTS-only.
+    if (sessionKey?.trim().startsWith('agent:main:explicit:')) {
+      console.warn(`[voice ${this.roomId}] session.switch carried an explicit-channel key — rejecting it (key-drift guard), keeping room key`);
+      sessionKey = undefined;
+    }
     const sw = { session: id, ...(sessionKey?.trim() ? { sessionKey: sessionKey.trim() } : {}) };
     if (!this.state.turnInFlight && this.connected && this.peer && !this.peer.destroyed) {
       console.log(`[voice ${this.roomId}] Session switch → ${id} (idle — delivering now)`);
