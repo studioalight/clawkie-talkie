@@ -69,7 +69,7 @@ const PHANTOM_SWITCH_GRACE_MS = 12_000;
 // ring (drop-incoming guards the worst case).
 const TTS_PACE_TICK_MS = 40;
 const TTS_PACE_BYTES_PER_TICK = 1280; // 40ms of 16kHz mono PCM16 per tick (fits Ethernet MTU)
-const TTS_PACE_LOOKAHEAD_BYTES = 12800; // budget cap (~400ms)
+const TTS_PACE_LOOKAHEAD_BYTES = 48000; // budget cap ~1.5s: must exceed the board's 16KB resume cushion (field 08:23: 12800 cap made "cushion rebuilt" unreachable)
 const TTS_PACE_HEADSTART_BYTES = 38400; // cushion: 1.2s headstart matching ESP32 preroll buffer
 const TTS_PACE_RATE = 1.1; // 1.1x steady feed to sustain 1.2s buffer depth
 const MAX_SCTP_BUFFERED_AMOUNT = 64 * 1024; // 64KB cushion: prevents delayed-SACK micro-pauses while guarding against runaway
@@ -291,6 +291,7 @@ export class VoiceSession {
   private ttsPaceToken: number | null = null;
   private ttsPaceCursor = 0; // next canonical chunk index to send live
   private ttsPaceBudget = 0; // send bytes currently allowed (grows at realtime)
+  private ttsPaceLastGrowAt = 0; // wall-clock of last budget growth (time-based pacing, 2026-10-15)
   // TTS field-timing diagnostics (2026-10-08 11:0x): lab tests exonerated the
   // API (4x realtime), resampler (3.8x), board (767e4cf) — but field turns
   // still stall. Instrument the live pump→send path to name the layer.
@@ -1595,6 +1596,7 @@ export class VoiceSession {
     // audio immediately so ticks only SUSTAIN depth (overdrive 1.15x), not
     // build it from zero — 1.0x-with-zero-slack was the 11:16 field pause.
     this.ttsPaceBudget = TTS_PACE_HEADSTART_BYTES;
+    this.ttsPaceLastGrowAt = 0;
     // Diag reset (field timing instrumentation, live pump→send path)
     this.ttsDiagStartedAt = Date.now();
     this.ttsDiagSentCount = 0;
@@ -1625,9 +1627,16 @@ export class VoiceSession {
         }
         return;
       }
-      // Grow budget at realtime × overdrive, capped at ~1s.
+      // Grow budget at realtime × overdrive, capped at lookahead.
+      // TIME-BASED (field 2026-10-15 08:23): the per-tick constant assumed
+      // 40ms ticks; a busy event loop stretches ticks to 80–110ms, so the
+      // board was fed at ~0.6x realtime (good-morning turn: 718KB/40s) —
+      // the stutter root cause after the pump-logging fix. Grow by ACTUAL
+      // elapsed time; the lookahead cap still bounds SCTP backlog.
+      const growDtMs = this.ttsPaceLastGrowAt ? Math.max(0, now - this.ttsPaceLastGrowAt) : TTS_PACE_TICK_MS;
+      this.ttsPaceLastGrowAt = now;
       this.ttsPaceBudget = Math.min(
-        this.ttsPaceBudget + TTS_PACE_BYTES_PER_TICK * TTS_PACE_RATE,
+        this.ttsPaceBudget + (TTS_PACE_BYTES_PER_TICK * TTS_PACE_RATE * growDtMs) / TTS_PACE_TICK_MS,
         TTS_PACE_LOOKAHEAD_BYTES,
       );
       while (this.ttsPaceCursor < t.chunks.length) {
