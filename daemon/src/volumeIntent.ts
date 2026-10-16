@@ -1,61 +1,65 @@
 /**
- * volumeIntent — decision-model volume-request detector for voice turns (field
- * exploration: the daemon detects "turn it up"/"max volume"/"set it to ..." on
- * voice transcripts BEFORE the chat turn, applies the gain in-process, and
- * returns a short spoken ack without entering an agent turn.
+ * volumeIntent — decision-model volume-intent detector for voice turns.
  *
- * Exploration note (2026-10-16): the daemon is not an agent context, so the
- * typed `decision_evaluate` is not directly reachable from this process; the
- * current call path is the same `openclaw agent` CLI used for chat turns, with
- * a boolean-style prompt, until an agent-side typed route lands. The detector
- * interface (`evaluateVolumeIntent`) is the seam to swap to the typed call.
+ * Design (route 4, clean): the daemon classifies the STT transcript with the
+ * local decision model via the typesafe relay loopback
+ *   POST http://127.0.0.1:18099/v1/systemone
+ * (relay → 192.168.0.149 ollama, model kev-latest). This is a plain HTTP call
+ * from the daemon process — NOT an `openclaw agent` spawn — so it avoids the
+ * gateway's inter-session attribution/serialization guard that blocked the
+ * earlier spawn-based version (the 09:29 `openclaw_gateway_unavailable` failure).
+ *
+ * On a hit (probabilityTrue >= threshold) the caller applies the gain in-process,
+ * gives a short spoken ack, and skips the chat turn entirely. On a miss or any
+ * decision-backend failure the normal chat turn proceeds (safe degradation).
+ *
  * Rate-limited + cached 6s (volume requests arrive in bursts on repeat PTT).
+ *
+ * NOTE 2026-10-16: this is ready to run, but the decision backend on 192.168.0.149
+ * (kev-latest, a local GGUF import with CAPABILITY decision) is currently in a
+ * format 192.168.0.149's ollama 0.40.5 reports as "no longer supported". It
+ * worked earlier today; it broke after that host's ollama restarted/upgraded.
+ * It is not a registry model (cannot `ollama pull`) and I have no SSH there to
+ * re-import, so it needs a re-import on .149 before this path returns live
+ * probabilities. Until then classify() returns null and the turn falls through.
  */
 
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
-
 export interface VolumeIntent {
-  requested: boolean;      // probability >= threshold
-  absoluteDb: number | null; // "set volume to N/max"
-  adjustDb: number | null;   // "louder"/"quieter"/"a bit"
+  requested: boolean;
+  absoluteDb: number | null;   // "set volume to N/max/mute"
+  adjustDb: number | null;     // "louder"/"quieter"/"a bit"
   probability: number;
 }
 
+const ENDPOINT =
+  process.env.VOLUME_DECISION_ENDPOINT ?? 'http://127.0.0.1:18099/v1/systemone';
+const MODEL = process.env.VOLUME_DECISION_MODEL ?? 'kev-latest';
+const THRESHOLD = 0.8;
+const TIMEOUT_MS = 6000;
 const CACHE_WINDOW_MS = 6000;
+
 let lastCallAt = 0;
 let lastTranscript = '';
 let lastResult: VolumeIntent | null = null;
 
-const THRESHOLD = 0.85;
-const MODEL = 'ollama-cloud/glm-5.3-flash';  // the voice agent's chat model; a fast one
-
-const BOOLEAN_PROMPT = (t: string) => [
-  `You are a voice-agent intent classifier. Decide whether the following is a`,
-  `request to change playback volume. Answer ONLY "yes" or "no" and nothing`,
-  `else (no punctuation, no explanation). Examples of yes: "turn it up",
-  "louder", "quieter please", "set volume to max", "drop it by six", "volume
-  down", "a bit quieter", "max volume", "raise the volume". Yes also includes
-  the same request in another language. Any command that merely mentions
-  playback (e.g. "play") without a change request is no. Transcript:
-  "${t.replace(/"/g, "'").slice(0, 220)}"`,
-].join(' ');
+const VOLUME_QUESTION =
+  'Is the user requesting a change to playback volume (turning it up, turning it down, ' +
+  'or setting it to a specific level)? ' +
+  'Yes only if the utterance asks for a volume/gain change. ' +
+  'No for greetings, questions, or unrelated commands.';
 
 function normalizeNumeric(text: string): number | null {
   const m = text.match(/\b(\d{1,2})\b/i);
   if (!m) return null;
   const n = parseInt(m[1], 10);
-  if (isNaN(n)) return null;
-  return n;
+  return Number.isFinite(n) ? n : null;
 }
 
 function parseRelativeAmount(t: string): number | null {
   const low = t.toLowerCase();
   if (/\b(much|a lot|a lot more|really|crank|all the way|max(imum)?)\b/.test(low)) return 12;
   if (/\b(a bit|a little|slightly|small|tiny|little)\b/.test(low)) return -3;
-  if (/\b(quieter|quieter|softer|too loud|drop it|turn it down|lower)\b/.test(low)) return -6;
+  if (/\b(quieter|softer|too loud|drop it|turn it down|lower)\b/.test(low)) return -6;
   if (/\b(louder|up|bigger|more volume|louden|raise)\b/.test(low)) return 6;
   return null;
 }
@@ -63,10 +67,9 @@ function parseRelativeAmount(t: string): number | null {
 function detectAbsolute(t: string): number | null {
   const low = t.toLowerCase();
   if (/\bmax(imum)?(\s+volume)?\b/.test(low)) return 12;
-  if (/\bmin(imum)?|mute\b/.test(low)) return -30;
+  if (/\bmin(imum)?\b/.test(low) || /\bmute\b/.test(low)) return -30;
   const n = normalizeNumeric(low);
   if (n !== null) {
-    // "set volume to 6" -> absolute dB clamp -30..+12; if user means 60%, interpret
     if (/\b(percent|%)\b/.test(low)) {
       if (n <= 100) return Math.round(-30 + (n / 100) * 42);
     }
@@ -75,35 +78,71 @@ function detectAbsolute(t: string): number | null {
   return null;
 }
 
+/** One decision-model call. Returns probabilityTrue, or null on any failure. */
+async function classify(transcript: string): Promise<number | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    const body = {
+      model: MODEL,
+      state: {
+        transcript: transcript.slice(0, 300),
+        context: 'User speaking to a voice assistant on a clawkie talkie phone.',
+      },
+      questions: { vol: { type: 'noul', instructions: VOLUME_QUESTION } },
+    };
+    const res = await fetch(ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      console.warn(`[volume-intent] decision endpoint ${res.status}: ${text.slice(0, 200)}`);
+      return null;
+    }
+    const json = await res.json();
+    const p = json?.answers?.vol?.noul;
+    if (typeof p === 'number') return p;
+    console.warn(
+      `[volume-intent] unexpected decision response: ${JSON.stringify(json).slice(0, 200)}`,
+    );
+    return null;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(`[volume-intent] decision call failed (treating as no): ${reason}`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function evaluateVolumeIntent(transcript: string): Promise<VolumeIntent | null> {
   const t = transcript.trim();
   if (!t) return null;
   const now = Date.now();
-  if (lastResult && lastTranscript === t && now - lastCallAt < CACHE_WINDOW_MS) return lastResult;
+  if (lastResult && lastTranscript === t && now - lastCallAt < CACHE_WINDOW_MS) {
+    return lastResult;
+  }
 
-  const prompt = BOOLEAN_PROMPT(t);
-  try {
-    const { stdout } = await execFileAsync('openclaw', [
-      'agent', '--agent', 'main', '--json', '--timeout', '8', '-m', prompt,
-    ], { env: process.env });
-    // Parse the agent JSON answer; it comes as { text: ... } or a text blob.
-    const parsed = JSON.parse(stdout);
-    const s = (parsed?.text ?? parsed?.reply ?? '').toLowerCase().trim();
-    const yes = /^yes\b/.test(s) || s.includes('"answer":true') || s.includes('"answer": "true"');
-    const result: VolumeIntent = {
-      requested: yes,
-      absoluteDb: detectAbsolute(t),
-      adjustDb: yes ? parseRelativeAmount(t) : null,
-      probability: yes ? 0.95 : 0.05,   // CLI answer is binary (yes/no); no probability mass
-    };
-    lastCallAt = now; lastTranscript = t; lastResult = result;
-    return result;
-  } catch (err) {
-    // The detector's failure mode is benign: treat as not-requested and let the
-    // chat turn run. Never block voice turns on classification failure.
-    const reason = err instanceof Error ? err.message : String(err);
-    console.warn(`[volume-intent] evaluation failed (treating as no): ${reason}`);
-    lastCallAt = now; lastTranscript = t; lastResult = null;
+  const probability = await classify(t);
+  if (probability === null) {
+    lastCallAt = now;
+    lastTranscript = t;
+    lastResult = null;
     return null;
   }
+
+  const requested = probability >= THRESHOLD;
+  const result: VolumeIntent = {
+    requested,
+    absoluteDb: requested ? detectAbsolute(t) : null,
+    adjustDb: requested ? parseRelativeAmount(t) : null,
+    probability,
+  };
+  lastCallAt = now;
+  lastTranscript = t;
+  lastResult = result;
+  return result;
 }
