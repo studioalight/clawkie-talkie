@@ -1447,6 +1447,42 @@ export class VoiceSession {
     console.log(`[voice ${this.roomId}] DEBUG: runReplyTurn transcript="${transcript.trim().substring(0, 100)}" token=${token}`);
     if (!this.isTurnActive(token)) return;
     const trimmed = transcript.trim();
+    // Volume-intent detector (decision-model exploration, 2026-10-16):
+    // intercept volume requests before the agent turn — apply the gain
+    // in-process, give a short spoken ack, skip the chat turn entirely.
+    // On miss or detector failure the turn proceeds normally.
+    if (trimmed) {
+      try {
+        const { evaluateVolumeIntent } = await import('./volumeIntent.js');
+        const intent = await evaluateVolumeIntent(trimmed);
+        if (intent?.requested) {
+          let appliedDb: number;
+          if (intent.absoluteDb !== null) {
+            appliedDb = this.applyTtsVolume(intent.absoluteDb);
+          } else if (intent.adjustDb !== null) {
+            appliedDb = this.adjustTtsVolume(intent.adjustDb);
+          } else {
+            appliedDb = this.adjustTtsVolume(3);
+          }
+          const note = intent.absoluteDb !== null ? appliedDb : (appliedDb - this.ttsGainDb);
+          if (intent.absoluteDb !== null) console.log(`[voice ${this.roomId}] volume absolute ${intent.absoluteDb} applied=${appliedDb}`);
+          else console.log(`[voice ${this.roomId}] volume adjust ${intent.adjustDb} applied=${appliedDb}`);
+          // Spoken ack (short, TTS) — same replyDone+TTS path as chat turns,
+          // minus the chat turn. The board reads replyDone for display and
+          // plays the tiny ack.
+          const ackText = intent.absoluteDb !== null
+            ? (intent.absoluteDb >= 12 ? "Max volume." : (intent.absoluteDb <= -20 ? "Muted." : `Volume set to ${intent.absoluteDb > 0 ? '+' : ''}${intent.absoluteDb} decibels.`))
+            : (intent.adjustDb !== null && intent.adjustDb > 0 ? "Louder." : (intent.adjustDb !== null && intent.adjustDb < 0 ? "Quieter." : "Volume adjusted."));
+          this.send(daemonToPhone.replyDone(ackText));
+          void this.openTtsAsync(ackText, token);
+          this.resetTurn('volume_intent');
+          return;
+        }
+      } catch (err) {
+        console.warn(`[voice ${this.roomId}] volume-intent detector error (ignoring): ${err instanceof Error ? err.message : err}`);
+        // fall through — chat turn runs
+      }
+    }
     if (!trimmed) {
       console.log(`[voice ${this.roomId}] DEBUG: empty transcript, sending error`);
       this.send(daemonToPhone.replyError('empty_transcript'));
