@@ -720,7 +720,19 @@ export class DaemonPeer {
     rp.joined = true;
     const sessionId = (msg.sessionId ?? '').trim();
     const deviceId = (msg.deviceId ?? '').trim();
-    const sessionKey = (msg.sessionKey ?? '').trim();
+    let sessionKey = (msg.sessionKey ?? '').trim();
+    // Poison-key guard, join-time last layer (field 2026-10-16 21:56). A board
+    // flashed before the key-drift fix can still carry the drift-era
+    // `agent:<agent>:explicit:<sessionId>` key in NVS; explicit keys have no
+    // external reply channel, so every reply failed openclaw_delivery_unresolved
+    // even over a perfectly healthy lane. The switch/room emitters already
+    // reject explicit keys (619f734) — joins now sanitize any explicit key to
+    // keyless so the room runs unpinned and chatSession's CLI key-pinning
+    // resolves the correct dashboard key.
+    if (/:explicit:/.test(sessionKey)) {
+      console.error(`[peer] poison-key guard: ${rp.remoteId} join carried explicit key — sanitizing to keyless`);
+      sessionKey = '';
+    }
     console.error(`[peer] rendezvous.join from ${rp.remoteId}: sessionId=${sessionId} sessionKey=${sessionKey || '(none)'} deviceId=${deviceId || '(none)'}`);
     const channel = (msg.channel ?? '').trim();
     const target = (msg.target ?? '').trim();
