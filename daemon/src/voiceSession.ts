@@ -1473,9 +1473,12 @@ export class VoiceSession {
           const ackText = intent.absoluteDb !== null
             ? (intent.absoluteDb >= 12 ? "Max volume." : (intent.absoluteDb <= -20 ? "Muted." : `Volume set to ${intent.absoluteDb > 0 ? '+' : ''}${intent.absoluteDb} decibels.`))
             : (intent.adjustDb !== null && intent.adjustDb > 0 ? "Louder." : (intent.adjustDb !== null && intent.adjustDb < 0 ? "Quieter." : "Volume adjusted."));
+          // Do NOT resetTurn here: the token must stay active so openTtsAsync
+          // passes its isTurnActive guard; TTS completion (tts_done path) owns
+          // the turn end. Resetting here killed the ack audio and left the
+          // board parked on reply.done (field bug 2026-10-16 18:24).
           this.send(daemonToPhone.replyDone(ackText));
           void this.openTtsAsync(ackText, token);
-          this.resetTurn('volume_intent');
           return;
         }
       } catch (err) {
