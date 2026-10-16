@@ -33,8 +33,18 @@ const ENDPOINT =
   process.env.VOLUME_DECISION_ENDPOINT ?? 'http://127.0.0.1:18099/v1/systemone';
 const MODEL = process.env.VOLUME_DECISION_MODEL ?? 'clef-flash';
 const THRESHOLD = 0.8;
-const TIMEOUT_MS = 6000;
+const TIMEOUT_MS = 25000; // must cover cold model load on .149 (~10-20s)
 const CACHE_WINDOW_MS = 6000;
+// Keep-warm: ollama unloads idle models after ~5m; probe just under that so
+// decision calls stay fast instead of re-paying load on the field.
+const WARM_INTERVAL_MS = 240000;
+// Circuit breaker: after repeated backend failures stop calling it for a
+// cooldown so voice turns never stall on a dead endpoint.
+const BREAKER_THRESHOLD = 2;
+const BREAKER_COOLDOWN_MS = 600000;
+
+let consecutiveFailures = 0;
+let breakerUntil = 0;
 
 let lastCallAt = 0;
 let lastTranscript = '';
@@ -116,9 +126,51 @@ async function classify(transcript: string): Promise<number | null> {
   }
 }
 
+/** Tiny no-op evaluation that keeps the decision model loaded on .149. */
+async function warmProbe(): Promise<void> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        model: MODEL,
+        state: 'warm',
+        questions: { warm: { type: 'noul', instructions: 'Warmup probe. Answer 0.' } },
+      }),
+      signal: ctrl.signal,
+    });
+    if (res.ok) {
+      if (consecutiveFailures > 0) {
+        console.log('[volume-intent] backend healthy again (warm probe ok)');
+      }
+      consecutiveFailures = 0;
+    } else {
+      console.warn(`[volume-intent] warm probe ${res.status}`);
+    }
+  } catch {
+    console.warn('[volume-intent] warm probe failed (backend unreachable or slow)');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Fire one warm probe at startup, then keep the model resident. unref'd so it
+// never holds the process open (daemon runs under launchd anyway).
+let warmTimer: ReturnType<typeof setInterval> | null = null;
+function ensureWarmLoop(): void {
+  if (warmTimer) return;
+  warmTimer = setInterval(() => void warmProbe(), WARM_INTERVAL_MS);
+  warmTimer.unref?.();
+  void warmProbe();
+}
+
 export async function evaluateVolumeIntent(transcript: string): Promise<VolumeIntent | null> {
+  ensureWarmLoop();
   const t = transcript.trim();
   if (!t) return null;
+  if (Date.now() < breakerUntil) return null; // breaker open: chat turn, no stall
   const now = Date.now();
   if (lastResult && lastTranscript === t && now - lastCallAt < CACHE_WINDOW_MS) {
     return lastResult;
@@ -126,11 +178,19 @@ export async function evaluateVolumeIntent(transcript: string): Promise<VolumeIn
 
   const probability = await classify(t);
   if (probability === null) {
+    consecutiveFailures += 1;
+    if (consecutiveFailures >= BREAKER_THRESHOLD) {
+      breakerUntil = Date.now() + BREAKER_COOLDOWN_MS;
+      console.warn(
+        `[volume-intent] backend failed ${consecutiveFailures}x — breaker open for ${BREAKER_COOLDOWN_MS / 60000} min (chat turns unaffected)`,
+      );
+    }
     lastCallAt = now;
     lastTranscript = t;
     lastResult = null;
     return null;
   }
+  consecutiveFailures = 0;
 
   const requested = probability >= THRESHOLD;
   const result: VolumeIntent = {
