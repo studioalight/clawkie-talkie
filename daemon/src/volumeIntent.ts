@@ -4,7 +4,7 @@
  * Design (route 4, clean): the daemon classifies the STT transcript with the
  * local decision model via the typesafe relay loopback
  *   POST http://127.0.0.1:18099/v1/systemone
- * (relay → 192.168.0.149 ollama, model kev-latest). This is a plain HTTP call
+ * (relay → 192.168.0.149 ollama, model clef-flash). This is a plain HTTP call
  * from the daemon process — NOT an `openclaw agent` spawn — so it avoids the
  * gateway's inter-session attribution/serialization guard that blocked the
  * earlier spawn-based version (the 09:29 `openclaw_gateway_unavailable` failure).
@@ -15,13 +15,11 @@
  *
  * Rate-limited + cached 6s (volume requests arrive in bursts on repeat PTT).
  *
- * NOTE 2026-10-16: this is ready to run, but the decision backend on 192.168.0.149
- * (kev-latest, a local GGUF import with CAPABILITY decision) is currently in a
- * format 192.168.0.149's ollama 0.40.5 reports as "no longer supported". It
- * worked earlier today; it broke after that host's ollama restarted/upgraded.
- * It is not a registry model (cannot `ollama pull`) and I have no SSH there to
- * re-import, so it needs a re-import on .149 before this path returns live
- * probabilities. Until then classify() returns null and the turn falls through.
+ * NOTE 2026-10-16: kev-latest on 192.168.0.149 is unloadable by that host's ollama
+ * 0.40.5 ("format that is no longer supported", local GGUF import, not re-pullable);
+ * Fredrik re-imported clef-flash the same evening and it answers typed decisions
+ * correctly (p=0.968 volume / p=0.006 control), so the default model is clef-flash.
+ * Until then classify() returns null and the turn falls through.
  */
 
 export interface VolumeIntent {
@@ -33,7 +31,7 @@ export interface VolumeIntent {
 
 const ENDPOINT =
   process.env.VOLUME_DECISION_ENDPOINT ?? 'http://127.0.0.1:18099/v1/systemone';
-const MODEL = process.env.VOLUME_DECISION_MODEL ?? 'kev-latest';
+const MODEL = process.env.VOLUME_DECISION_MODEL ?? 'clef-flash';
 const THRESHOLD = 0.8;
 const TIMEOUT_MS = 6000;
 const CACHE_WINDOW_MS = 6000;
