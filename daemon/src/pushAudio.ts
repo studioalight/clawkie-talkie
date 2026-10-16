@@ -177,9 +177,19 @@ export class PushAudioChannel {
    * and the control door's stop command (agreed 2026-09-17).
    */
   requestStop(): boolean {
-    if (!this.playing) return false;
-    this.stopActive?.();
-    return true;
+    const wasPlaying = this.playing;
+    if (this.playing) this.stopActive?.();
+    // Stop means stop: drain queued pushes too. Field 2026-10-16 20:35 —
+    // four stream pushes while lanes flapped left duplicates in the queue;
+    // each stop killed only the active streamer, the pump instantly popped
+    // the next one, and radio playback resurrected itself after every stop.
+    const drained = this.queue.splice(0);
+    for (const item of drained) {
+      try {
+        item.resolve({ ok: false, error: 'stopped', detail: 'cleared by stop (queued push never started)' });
+      } catch { /* resolve must not throw */ }
+    }
+    return wasPlaying || drained.length > 0;
   }
 
   /** Source-specific stop for the in-flight push: kill decoder, close the client stream, resolve 'stopped'. */
