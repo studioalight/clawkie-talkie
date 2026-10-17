@@ -121,12 +121,14 @@ export class TailscaleVoiceServer {
   }
 
   /** Keep board:9100 → VM:9100 deliverable: tailscaled forwards inbound UDP
-   * only for recently-sent flows. Board's voice replies + uplink PCM ride
-   * the inverse pair of these datagrams. */
+   * only for recently-sent flows. Payload: daemon.hello (not keepalive) —
+   * the board's dispatcher flips its animation gate on it (field 16:3x:
+   * the WG-primary lane never delivered hello so the gate stayed shut and
+   * the boot display stuck; idempotent + sticky on the board). */
   private flowKeepalive(): void {
     for (const [vpnIp, board] of this.boards) {
-      this.sock.send(Buffer.from('{"t":"keepalive"}'), WG_VOICE_PORT, vpnIp, (err) => {
-        if (err) console.warn(`[ts-voice] keepalive to ${board.deviceId}: ${err.message}`);
+      this.sock.send(Buffer.from('{"t":"daemon.hello"}'), WG_VOICE_PORT, vpnIp, (err) => {
+        if (err) console.warn(`[ts-voice] hello/keepalive to ${board.deviceId}: ${err.message}`);
       });
     }
   }
