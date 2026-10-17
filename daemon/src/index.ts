@@ -25,6 +25,7 @@ import { defaultRecentSessionsCache } from './recentSessions.js';
 import { startPushControl } from './pushControl.js';
 import { startVoiceControl } from './voiceControl.js';
 import { defaultBoardRegistry } from './tailscaleTransport.js';
+import { startTailscaleVoiceServer } from './tailscaleVoiceServer.js';
 
 // Add HH:MM:SS.mmm timestamps to all console output (matching ESP32 log format)
 const origLog = console.log;
@@ -89,6 +90,10 @@ async function main(): Promise<void> {
   // rendezvous-free voice architecture — no delivery path switched yet.
   const tailnet = defaultBoardRegistry();
   tailnet.startMonitor();
+  // WG voice lane (phase-2 iteration): UDP :9100, protocol-identical to the
+  // webrtc data channel — STT/chat/TTS pipeline reused verbatim. Source-
+  // allowlisted to registered boards; disable with TS_VOICE_SERVER_DISABLE=1.
+  startTailscaleVoiceServer();
 }
 
 main().catch((err) => {
