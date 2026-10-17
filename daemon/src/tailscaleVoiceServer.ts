@@ -60,6 +60,7 @@ interface BoardTurnState {
   stt: SttSessionLike | null;
   sttOpen: boolean;
   sttReady: boolean;
+  sttAudioDone: boolean;  // arrived before infer session ready (remote-PTT diag path)
   turnBusy: boolean;
   tts: ElevenLabsTtsSession | null;
   pendingPcm: Buffer[];   // arrived before the infer session was ready
@@ -120,7 +121,7 @@ export class TailscaleVoiceServer {
   private turn(board: TsBoard): BoardTurnState {
     let t = this.turns.get(board.vpnIp);
     if (!t) {
-      t = { stt: null, sttOpen: false, sttReady: false, turnBusy: false, tts: null, pendingPcm: [], lastSeen: 0 };
+      t = { stt: null, sttOpen: false, sttReady: false, sttAudioDone: false, turnBusy: false, tts: null, pendingPcm: [], lastSeen: 0 };
       this.turns.set(board.vpnIp, t);
     }
     t.lastSeen = Date.now();
@@ -147,6 +148,13 @@ export class TailscaleVoiceServer {
                 for (const b of t.pendingPcm.splice(0)) {
                   sessionRef?.sendAudio(b);
                 }
+                // audio-done raced the session-create (remote-PTT diag: the
+                // board ends its window on its own schedule): flush, then
+                // signal done — mirrors the rendezvous wrapper's ordering.
+                if (t.sttAudioDone) {
+                  console.log(`[ts-voice ${board.deviceId}] audio.done raced create — signaling done after flush`);
+                  void Promise.resolve(sessionRef?.signalAudioDone());
+                }
               },
               onPartial: (text, isFinal) => {
                 this.send(board, { t: 'stt.partial', text, is_final: !!isFinal });
@@ -169,6 +177,7 @@ export class TailscaleVoiceServer {
           t.stt = session;
           t.sttOpen = true;
           t.sttReady = false;
+          t.sttAudioDone = false;
         } catch (err) {
           console.error(`[ts-voice ${board.deviceId}] STT create failed: ${err instanceof Error ? err.message : err}`);
           this.send(board, { t: 'stt.error', message: 'openclaw_infer_stt_failed' });
@@ -178,7 +187,13 @@ export class TailscaleVoiceServer {
 
       case 'stt.audio.done': {
         if (t.stt) {
-          void Promise.resolve(t.stt.signalAudioDone());
+          if (t.sttReady) {
+            void Promise.resolve(t.stt.signalAudioDone());
+          } else {
+            // Session still spawning — flag it; onReady flushes PCM then signals.
+            t.sttAudioDone = true;
+            console.log(`[ts-voice ${board.deviceId}] audio.done before ready — deferred`);
+          }
         }
         return;
       }
