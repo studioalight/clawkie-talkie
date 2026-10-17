@@ -302,44 +302,73 @@ export class TailscaleVoiceServer {
     const t = this.turn(board);
     const ttsStart = Date.now();
     let firstPcmAt = 0;
+    let firstPcmSent = false;
+    let synthDone = false;
+    let pending = Buffer.alloc(0);
+    let sentChunks = 0;
+    let drainTimer: NodeJS.Timeout | null = null;
+    let settled = false;
+
     return new Promise((resolve) => {
       this.send(board, daemonToPhone.ttsStart(16000, { text: text.slice(0, 80) }));
-      let settled = false;
-      let pending = Buffer.alloc(0);
       const finish = () => {
         if (settled) return;
         settled = true;
+        if (drainTimer) { clearInterval(drainTimer); drainTimer = null; }
         t.tts = null;
         this.send(board, daemonToPhone.ttsDone());
+        // Double-send tts.done (300ms apart): idempotent on the board
+        // (handler no-ops on a drained pipeline), belt-and-braces against a
+        // control packet lost at the burst tail.
+        setTimeout(() => {
+          try { this.send(board, daemonToPhone.ttsDone()); } catch { /* ignore */ }
+        }, 300).unref?.();
         resolve();
       };
+      // PACED EMISSION (field 13:46, Fredrik count test): the reply text was
+      // complete but ~1-1.5s of audio went missing with NO pauses — ElevenLabs
+      // flash synthesizes FASTER than realtime (3.7s wall for ~4.5-6s audio),
+      // and the old code drained `pending` at wire speed, so the whole reply
+      // hit the board's 16-deep UDP RX queue as an instantaneous burst and
+      // chunks beyond it dropped silently (missing numbers = dropped 40ms
+      // chunks mid-count). Pace at ~20ms per 37.5ms chunk (1.875x realtime):
+      // synthesis never outruns delivery, the queue never sees a burst, and
+      // playback is realtime anyway so there is no latency penalty. The
+      // board's jitter cushion absorbs the residual gaps.
+      const drain = () => {
+        let budget = pending.length > PCM_CHUNK_BYTES * 6 ? 2 : 1;
+        while (budget > 0 && pending.length > 0) {
+          const n = Math.min(PCM_CHUNK_BYTES, pending.length);
+          this.sendPcm(board, pending.subarray(0, n));
+          pending = pending.subarray(n);
+          sentChunks += 1;
+          if (!firstPcmSent) {
+            firstPcmSent = true;
+            firstPcmAt = Date.now() - ttsStart;
+            console.log(`[ts-voice ${board.deviceId}] first TTS PCM (+${firstPcmAt}ms)`);
+          }
+          budget -= 1;
+        }
+        if (synthDone && pending.length === 0) {
+          const audioMs = sentChunks * 37.5;
+          console.log(`[ts-voice ${board.deviceId}] TTS done (total ${Date.now() - ttsStart}ms, chunks=${sentChunks} ≈${Math.round(audioMs)}ms audio)`);
+          finish();
+        }
+      };
+      drainTimer = setInterval(drain, 20);
+      drainTimer.unref?.();
+      void drain();
       const session = new ElevenLabsTtsSession(
         { text },
         {
           onAudio: (pcm) => {
             if (settled) return;
-            if (pending.length === 0) {
-              firstPcmAt = Date.now() - ttsStart;
-              console.log(`[ts-voice ${board.deviceId}] first TTS PCM (+${firstPcmAt}ms)`);
-            }
             pending = Buffer.concat([pending, Buffer.from(pcm)]);
-            while (pending.length >= PCM_CHUNK_BYTES) {
-              this.sendPcm(board, pending.subarray(0, PCM_CHUNK_BYTES));
-              pending = pending.subarray(PCM_CHUNK_BYTES);
-            }
           },
           onDone: () => {
-            if (pending.length > 0) this.sendPcm(board, pending);
-            console.log(`[ts-voice ${board.deviceId}] TTS done (total ${Date.now() - ttsStart}ms, first PCM +${firstPcmAt || '—'}ms)`);
-            finish();
-            // Double-send tts.done (300ms apart): idempotent on the board
-            // (handler no-ops on a drained pipeline), and the first copy
-            // rides the burst tail where the 4-deep RX queue was dropping
-            // exactly the control datagram (field 13:23 — played but no
-            // [PA] OFF). Queue now 16; this is belt-and-braces.
-            setTimeout(() => {
-              try { this.send(board, daemonToPhone.ttsDone()); } catch { /* ignore */ }
-            }, 300).unref?.();
+            if (settled) return;
+            synthDone = true;
+            void drain();
           },
           onError: (message: string) => {
             console.error(`[ts-voice ${board.deviceId}] TTS error: ${message}`);
