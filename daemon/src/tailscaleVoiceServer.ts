@@ -160,6 +160,16 @@ export class TailscaleVoiceServer {
         if (t.stt) { try { t.stt.close(); } catch { /* ignore */ } t.stt = null; }
         console.log(`[ts-voice ${board.deviceId}] opening infer STT session (WG lane, ${rinfo.address})`);
         this.send(board, daemonToPhone.sttReady());
+        // Reset turn state BEFORE constructing the session: OpenClawInfer-
+        // SttSession fires onReady SYNCHRONOUSLY during construction (field
+        // 13:14:28 — 'ready' logged the same ms as 'opening'), so resetting
+        // after `new` would clobber sttReady=true and strand the whole turn
+        // (PCM buffers forever, audio.done defers to an onReady that already
+        // fired — the 13:14 deadlock).
+        t.sttOpen = true;
+        t.sttReady = false;
+        t.sttAudioDone = false;
+        t.pendingPcm = [];
         let sessionRef: SttSessionLike | null = null;
         try {
           const session = new OpenClawInferSttSession(
@@ -198,9 +208,6 @@ export class TailscaleVoiceServer {
           );
           sessionRef = session;
           t.stt = session;
-          t.sttOpen = true;
-          t.sttReady = false;
-          t.sttAudioDone = false;
         } catch (err) {
           console.error(`[ts-voice ${board.deviceId}] STT create failed: ${err instanceof Error ? err.message : err}`);
           this.send(board, { t: 'stt.error', message: 'openclaw_infer_stt_failed' });
@@ -255,6 +262,12 @@ export class TailscaleVoiceServer {
     const t = this.turn(board);
     if (t.turnBusy) {
       console.warn(`[ts-voice ${board.deviceId}] turn already running — dropped "${userText.slice(0, 40)}"`);
+      return;
+    }
+    if (!userText.trim()) {
+      // Ambient-room recording (remote-PTT diag) can legitimately transcribe
+      // to nothing — that IS a successful uplink test, just a quiet room.
+      console.log(`[ts-voice ${board.deviceId}] empty transcript (ambient quiet) — uplink validated, no chat turn`);
       return;
     }
     t.turnBusy = true;
