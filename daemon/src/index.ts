@@ -24,6 +24,7 @@ import { formatDashboardJoinUrl } from './dashboardUrl.js';
 import { defaultRecentSessionsCache } from './recentSessions.js';
 import { startPushControl } from './pushControl.js';
 import { startVoiceControl } from './voiceControl.js';
+import { defaultBoardRegistry } from './tailscaleTransport.js';
 
 // Add HH:MM:SS.mmm timestamps to all console output (matching ESP32 log format)
 const origLog = console.log;
@@ -82,6 +83,12 @@ async function main(): Promise<void> {
   // lets the agent / automations push unsolicited audio into a voice room.
   startPushControl(peer);
   startVoiceControl(peer);
+  // Tailnet direct-transport monitor (2026-10-17): round board lives on the
+  // tailnet (esp32-9b9198 @ 100.108.153.58 in spike state). Minute-cadence
+  // health (state changes + 10-min heartbeat only). The seam for the
+  // rendezvous-free voice architecture — no delivery path switched yet.
+  const tailnet = defaultBoardRegistry();
+  tailnet.startMonitor();
 }
 
 main().catch((err) => {

@@ -66,8 +66,9 @@ const ECHO_TIMEOUT_MS = 2500;
 const MONITOR_INTERVAL_MS = 60_000;
 
 export class TailscaleTransport {
-  private readonly boards = new Map<string, TailnetBoardConfig & { vpnIp: string }>();
+  private boards = new Map<string, TailnetBoardConfig & { vpnIp: string }>();
   private monitorTimer: NodeJS.Timeout | null = null;
+  private lastLoggedState = new Map<string, string>();
 
   registerDevice(cfg: TailnetBoardConfig): void {
     if (!cfg.vpnIp && !cfg.node) {
@@ -160,22 +161,30 @@ export class TailscaleTransport {
     };
   }
 
-  /** Minute-cadence monitor; emits health snapshots. Unref'd — never holds the process. */
-  startMonitor(onHealth: (deviceId: string, health: LaneHealth) => void): void {
+  /** Minute-cadence monitor; logs state CHANGES (+ a 10-tick heartbeat),
+   * calls onHealth on every sample. Unref'd — never holds the process. */
+  startMonitor(onHealth?: (deviceId: string, health: LaneHealth) => void): void {
     if (this.monitorTimer) return;
+    let tickNo = 0;
     const tick = () => {
+      tickNo += 1;
       for (const [deviceId] of this.boards) {
         void this.health(deviceId).then(
           (h) => {
-            onHealth(deviceId, h);
-            // Address may have been corrected by the status probe.
+            onHealth?.(deviceId, h);
             const cfg = this.boards.get(deviceId);
-            console.log(
-              `[tailnet ${deviceId}] ${h.state} echo=${h.echoRttMs ?? '—'}ms heap=${h.heapFree ?? '—'} at ${cfg?.vpnIp}`,
-            );
+            const prev = this.lastLoggedState.get(deviceId);
+            // Change detection keeps daemon logs clean: log transitions and
+            // a heartbeat every 10th sample (~10 min), not every minute.
+            if (h.state !== prev || tickNo % 10 === 0) {
+              console.log(
+                `[tailnet ${deviceId}] ${h.state} echo=${h.echoRttMs ?? '—'}ms heap=${h.heapFree ?? '—'} at ${cfg?.vpnIp}${prev && h.state !== prev ? ` (was ${prev})` : ''}`,
+              );
+              this.lastLoggedState.set(deviceId, h.state);
+            }
           },
           () => {
-            onHealth(deviceId, { state: 'lost', echoRttMs: null, lossPct: 100, heapFree: null, checkedAt: Date.now() });
+            onHealth?.(deviceId, { state: 'lost', echoRttMs: null, lossPct: 100, heapFree: null, checkedAt: Date.now() });
           },
         );
       }
