@@ -12,6 +12,9 @@ set -u
 [ "${SECRETS_ALLOW:-0}" = "1" ] && exit 0
 
 ALLOW_RE='XXXXX|xxxxx|your[-_a-z0-9]|<redacted>|changeme|placeholder|REDACTED|e\.g\.|\.\.\.$'
+# Placeholder VALUES: angle-bracket pointers ("<see-...>") are always safe —
+# kconfig credential lines carrying them are placeholders, not secrets.
+VALUE_PLACEHOLDER_RE='="<[^"]*>"'
 
 SECRET_RE='tskey-auth-[A-Za-z0-9]+-[A-Za-z0-9]{20,}|sk-(ant|proj|svcacct)-[A-Za-z0-9_-]{20,}|CONFIG_[A-Z0-9_]*(PASS|PASSWORD|SECRET|TOKEN|API_KEY|AUTH_KEY|PRIVATE_KEY)[A-Z0-9_]*="[^"]+|-----BEGIN [A-Z ]*PRIVATE KEY-----'
 
@@ -22,7 +25,9 @@ trap 'rm -f "$RESULT" "$STREAM"' EXIT
 
 scan_stream_file() {
   # $1 = file of candidate lines (already '+ '-stripped where applicable)
-  grep -Ev "$ALLOW_RE" "$1" 2>/dev/null | grep -En "$SECRET_RE" >> "$RESULT" || true
+  grep -Ev "$ALLOW_RE" "$1" 2>/dev/null \
+    | grep -Ev "$VALUE_PLACEHOLDER_RE" 2>/dev/null \
+    | grep -En "$SECRET_RE" >> "$RESULT" || true
 }
 
 MODE="${1:-lines}"
