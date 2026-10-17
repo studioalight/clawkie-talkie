@@ -28,6 +28,14 @@ import { ElevenLabsTtsSession } from './elevenLabsTtsSession.js';
 import { runChat } from './chatSession.js';
 
 const WG_VOICE_PORT = 9100;
+// tailscaled (userspace netstack) DROPs unsolicited inbound UDP: local
+// sockets only receive peer packets when a matching outbound flow exists
+// (symmetric 5-tuple, ~30s idle timeout). The board's voice uplink rides
+// board:9100 → VM:9100, so the daemon MUST keep that flow warm — keepalive
+// interval 10s, sent from this same socket. Field 2026-10-17 13:10: the
+// remote-PTT diag recorded 448 uplink chunks on the board that the daemon
+// never saw — pure listener, zero flow, silent drop.
+const FLOW_KEEPALIVE_MS = 10_000;
 // Tailscale tunnel MTU is 1280: UDP payload must be ≤1252B to avoid
 // fragmentation loss (field-probed 2026-10-17: 1000B ✓, 1280B ✗).
 // 1200B = 37.5ms @16k mono16, 28B headroom.
@@ -84,8 +92,23 @@ export class TailscaleVoiceServer {
     });
     this.sock.bind(WG_VOICE_PORT, () => {
       console.log(`[ts-voice] WG voice lane listening on udp/${WG_VOICE_PORT} (${this.boards.size} board(s) allowlisted)`);
+      // Establish the UDP flow immediately (tailscaled inbound gating).
+      this.flowKeepalive();
+      const timer = setInterval(() => this.flowKeepalive(), FLOW_KEEPALIVE_MS);
+      timer.unref();
     });
     this.sock.unref();
+  }
+
+  /** Keep board:9100 → VM:9100 deliverable: tailscaled forwards inbound UDP
+   * only for recently-sent flows. Board's voice replies + uplink PCM ride
+   * the inverse pair of these datagrams. */
+  private flowKeepalive(): void {
+    for (const [vpnIp, board] of this.boards) {
+      this.sock.send(Buffer.from('{"t":"keepalive"}'), WG_VOICE_PORT, vpnIp, (err) => {
+        if (err) console.warn(`[ts-voice] keepalive to ${board.deviceId}: ${err.message}`);
+      });
+    }
   }
 
   private onPacket(msg: Buffer, rinfo: RemoteInfo): void {
