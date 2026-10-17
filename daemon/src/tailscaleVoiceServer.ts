@@ -332,6 +332,14 @@ export class TailscaleVoiceServer {
             if (pending.length > 0) this.sendPcm(board, pending);
             console.log(`[ts-voice ${board.deviceId}] TTS done (total ${Date.now() - ttsStart}ms, first PCM +${firstPcmAt || '—'}ms)`);
             finish();
+            // Double-send tts.done (300ms apart): idempotent on the board
+            // (handler no-ops on a drained pipeline), and the first copy
+            // rides the burst tail where the 4-deep RX queue was dropping
+            // exactly the control datagram (field 13:23 — played but no
+            // [PA] OFF). Queue now 16; this is belt-and-braces.
+            setTimeout(() => {
+              try { this.send(board, daemonToPhone.ttsDone()); } catch { /* ignore */ }
+            }, 300).unref?.();
           },
           onError: (message: string) => {
             console.error(`[ts-voice ${board.deviceId}] TTS error: ${message}`);
