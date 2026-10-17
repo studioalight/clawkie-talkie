@@ -28,7 +28,10 @@ import { ElevenLabsTtsSession } from './elevenLabsTtsSession.js';
 import { runChat } from './chatSession.js';
 
 const WG_VOICE_PORT = 9100;
-const PCM_CHUNK_BYTES = 2048; // 64ms @16k mono16 (matches the TTS session's own chunking)
+// Tailscale tunnel MTU is 1280: UDP payload must be ≤1252B to avoid
+// fragmentation loss (field-probed 2026-10-17: 1000B ✓, 1280B ✗).
+// 1200B = 37.5ms @16k mono16, 28B headroom.
+const PCM_CHUNK_BYTES = 1200;
 const STT_SAMPLE_RATE = 16000;
 
 /** Registered tailnet boards (deviceId lane → config). */
