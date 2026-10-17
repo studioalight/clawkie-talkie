@@ -40,6 +40,7 @@ const FLOW_KEEPALIVE_MS = 10_000;
 // fragmentation loss (field-probed 2026-10-17: 1000B ✓, 1280B ✗).
 // 1200B = 37.5ms @16k mono16, 28B headroom.
 const PCM_CHUNK_BYTES = 1200;
+const PCM_CHUNK_MS = 37.5;   // 1200B / (16kHz * 2B) — audio duration per chunk
 const STT_SAMPLE_RATE = 16000;
 
 /** Registered tailnet boards (deviceId lane → config). */
@@ -301,12 +302,13 @@ export class TailscaleVoiceServer {
   private speak(board: TsBoard, text: string): Promise<void> {
     const t = this.turn(board);
     const ttsStart = Date.now();
-    let firstPcmAt = 0;
-    let firstPcmSent = false;
+    let firstSendAt = 0;      // when the first PCM chunk left the daemon
+    let firstPcmLogged = false;
     let synthDone = false;
     let pending = Buffer.alloc(0);
     let sentChunks = 0;
     let drainTimer: NodeJS.Timeout | null = null;
+    let doneTimer: NodeJS.Timeout | null = null;
     let settled = false;
 
     return new Promise((resolve) => {
@@ -315,7 +317,10 @@ export class TailscaleVoiceServer {
         if (settled) return;
         settled = true;
         if (drainTimer) { clearInterval(drainTimer); drainTimer = null; }
+        if (doneTimer) { clearTimeout(doneTimer); doneTimer = null; }
         t.tts = null;
+        const audioMs = sentChunks * PCM_CHUNK_MS;
+        console.log(`[ts-voice ${board.deviceId}] TTS done (total ${Date.now() - ttsStart}ms, chunks=${sentChunks} ≈${Math.round(audioMs)}ms audio, tts.done sent at board play-out)`);
         this.send(board, daemonToPhone.ttsDone());
         // Double-send tts.done (300ms apart): idempotent on the board
         // (handler no-ops on a drained pipeline), belt-and-braces against a
@@ -324,6 +329,26 @@ export class TailscaleVoiceServer {
           try { this.send(board, daemonToPhone.ttsDone()); } catch { /* ignore */ }
         }, 300).unref?.();
         resolve();
+      };
+      // TTS.DONE DEFERRAL (field 14:08): the board's amp schedule cuts audio
+      // at tts.done — if the daemon finishes DELIVERING before the board
+      // finishes PLAYING, the buffered tail dies silently (14:08: 13.1s
+      // audio delivered in 7.9s wall, board played 8.4s, ~4.7s cut; the
+      // 13:46 count test lost numbers the same way). The board's ring
+      // absorbs delivery overshoot (16s PSRAM), so the correct contract:
+      // send tts.done only after first-send + audio-duration — the moment
+      // the board has played out everything it received. +400ms margin.
+      const scheduleBoardPlayOut = () => {
+        if (doneTimer || settled) return;
+        if (!firstSendAt) { finish(); return; }  // zero-length audio edge
+        const audioMs = sentChunks * PCM_CHUNK_MS;
+        const playedOutAt = firstSendAt + audioMs + 400;
+        const waitMs = Math.max(0, playedOutAt - Date.now());
+        if (waitMs > 0) {
+          console.log(`[ts-voice ${board.deviceId}] delivery complete (${sentChunks} chunks ≈${Math.round(audioMs)}ms audio) — tts.done deferred ${Math.round(waitMs)}ms for board play-out`);
+        }
+        doneTimer = setTimeout(finish, waitMs);
+        doneTimer.unref?.();
       };
       // PACED EMISSION (field 13:46, Fredrik count test): the reply text was
       // complete but ~1-1.5s of audio went missing with NO pauses — ElevenLabs
@@ -340,21 +365,17 @@ export class TailscaleVoiceServer {
         let b = budget;
         while (b > 0 && pending.length > 0) {
           const n = Math.min(PCM_CHUNK_BYTES, pending.length);
+          if (!firstSendAt) {
+            firstSendAt = Date.now();
+            console.log(`[ts-voice ${board.deviceId}] first TTS PCM sent (+${firstSendAt - ttsStart}ms)`);
+          }
+          firstPcmLogged = true;
           this.sendPcm(board, pending.subarray(0, n));
           pending = pending.subarray(n);
           sentChunks += 1;
-          if (!firstPcmSent) {
-            firstPcmSent = true;
-            firstPcmAt = Date.now() - ttsStart;
-            console.log(`[ts-voice ${board.deviceId}] first TTS PCM (+${firstPcmAt}ms)`);
-          }
           b -= 1;
         }
-        if (synthDone && pending.length === 0) {
-          const audioMs = sentChunks * 37.5;
-          console.log(`[ts-voice ${board.deviceId}] TTS done (total ${Date.now() - ttsStart}ms, chunks=${sentChunks} ≈${Math.round(audioMs)}ms audio)`);
-          finish();
-        }
+        if (synthDone) scheduleBoardPlayOut();
       };
       drainTimer = setInterval(drain, 37);
       drainTimer.unref?.();
