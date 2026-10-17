@@ -340,6 +340,12 @@ export class TailscaleVoiceServer {
       // the board has played out everything it received. +400ms margin.
       const scheduleBoardPlayOut = () => {
         if (doneTimer || settled) return;
+        // Gate on FULLY drained: synth done AND every chunk sent. Field bug
+        // 14:14 (self-caught): scheduling on the first post-synth tick used
+        // the partial chunk count (231 of 449) and fired tts.done while 8.2s
+        // of audio was still in flight — the exact tail-cut this feature
+        // exists to prevent.
+        if (!synthDone || pending.length > 0) return;
         if (!firstSendAt) { finish(); return; }  // zero-length audio edge
         const audioMs = sentChunks * PCM_CHUNK_MS;
         const playedOutAt = firstSendAt + audioMs + 400;
