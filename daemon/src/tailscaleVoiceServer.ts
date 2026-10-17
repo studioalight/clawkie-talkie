@@ -327,17 +327,18 @@ export class TailscaleVoiceServer {
       };
       // PACED EMISSION (field 13:46, Fredrik count test): the reply text was
       // complete but ~1-1.5s of audio went missing with NO pauses — ElevenLabs
-      // flash synthesizes FASTER than realtime (3.7s wall for ~4.5-6s audio),
-      // and the old code drained `pending` at wire speed, so the whole reply
-      // hit the board's 16-deep UDP RX queue as an instantaneous burst and
-      // chunks beyond it dropped silently (missing numbers = dropped 40ms
-      // chunks mid-count). Pace at ~20ms per 37.5ms chunk (1.875x realtime):
-      // synthesis never outruns delivery, the queue never sees a burst, and
-      // playback is realtime anyway so there is no latency penalty. The
-      // board's jitter cushion absorbs the residual gaps.
+      // flash synthesizes FASTER than realtime (2.7x measured: 15.7s audio in
+      // 5.85s wall), and wire-speed drain burst-dropped chunks at the board's
+      // RX queue. MUST BE ~1x REALTIME: the board's amp drain-grace is ~3s,
+      // so if arrival outruns playback the buffered tail dies when tts.done
+      // cuts the amp (13:59: 6.3s played of 15.7s delivered — the board's
+      // park cycles were the symptom, the wall-clock overshoot the cause).
+      // 37ms tick, 1 chunk (1200B = 37.5ms audio): delivery ≈ playback rate,
+      // tts.done lands as the tail finishes, amp grace covers ~nothing.
       const drain = () => {
-        let budget = pending.length > PCM_CHUNK_BYTES * 6 ? 2 : 1;
-        while (budget > 0 && pending.length > 0) {
+        const budget = pending.length > PCM_CHUNK_BYTES * 8 ? 2 : 1;
+        let b = budget;
+        while (b > 0 && pending.length > 0) {
           const n = Math.min(PCM_CHUNK_BYTES, pending.length);
           this.sendPcm(board, pending.subarray(0, n));
           pending = pending.subarray(n);
@@ -347,7 +348,7 @@ export class TailscaleVoiceServer {
             firstPcmAt = Date.now() - ttsStart;
             console.log(`[ts-voice ${board.deviceId}] first TTS PCM (+${firstPcmAt}ms)`);
           }
-          budget -= 1;
+          b -= 1;
         }
         if (synthDone && pending.length === 0) {
           const audioMs = sentChunks * 37.5;
@@ -355,7 +356,7 @@ export class TailscaleVoiceServer {
           finish();
         }
       };
-      drainTimer = setInterval(drain, 20);
+      drainTimer = setInterval(drain, 37);
       drainTimer.unref?.();
       void drain();
       const session = new ElevenLabsTtsSession(
