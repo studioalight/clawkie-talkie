@@ -63,6 +63,18 @@ const DEFAULT_BOARDS: TsBoard[] = [
     originRoomId:
       '8509cfcd-0632-4bb1-a85e-93fb44f1132d:669a3a68-f81e-4b40-b863-7a44b127a1ed~1cdbd49b9198',
   },
+  {
+    // AMOLED (esp32-424cec): registered on the tailnet 2026-10-17 14:33,
+    // LAN-direct with VM2. Voice WG lane uses the same :9100 protocol;
+    // session = Room 2 (its NVS-restored default per the 14:26 re-home).
+    deviceId: '7c0c5f424cec',
+    vpnIp: process.env.TAILSCALE_AMOLED_BOARD_IP ?? '100.125.137.52',
+    sessionId: process.env.TS_AMOLED_VOICE_SESSION_ID ?? '9a6a3d65-b127-476b-8010-b72037a4cb00',
+    sessionKey:
+      process.env.TS_AMOLED_VOICE_SESSION_KEY ?? 'agent:main:dashboard:c36f0e3b-ec09-469e-8b30-f609433d3b50',
+    originRoomId:
+      '8509cfcd-0632-4bb1-a85e-93fb44f1132d:9a6a3d65-b127-476b-8010-b72037a4cb00~7c0c5f424cec',
+  },
 ];
 
 interface BoardTurnState {
