@@ -92,7 +92,14 @@ export class TailscaleVoiceServer {
     });
     this.sock.bind(WG_VOICE_PORT, () => {
       console.log(`[ts-voice] WG voice lane listening on udp/${WG_VOICE_PORT} (${this.boards.size} board(s) allowlisted)`);
-      // Establish the UDP flow immediately (tailscaled inbound gating).
+      // One-shot VISIBLE probe: the board's dispatcher logs unknown types at
+      // INFO — a single serial line proves the VM:9100→board:9100 path per
+      // daemon start. The periodic keepalive below stays SILENT (board
+      // handles "keepalive" without logging): 6 lines/min would violate the
+      // USB-CDC serial discipline. Establish the flow immediately either way.
+      for (const [vpnIp, board] of this.boards) {
+        this.sock.send(Buffer.from('{"t":"__flow_probe__"}'), WG_VOICE_PORT, vpnIp);
+      }
       this.flowKeepalive();
       const timer = setInterval(() => this.flowKeepalive(), FLOW_KEEPALIVE_MS);
       timer.unref();
@@ -293,6 +300,8 @@ export class TailscaleVoiceServer {
 
   private speak(board: TsBoard, text: string): Promise<void> {
     const t = this.turn(board);
+    const ttsStart = Date.now();
+    let firstPcmAt = 0;
     return new Promise((resolve) => {
       this.send(board, daemonToPhone.ttsStart(16000, { text: text.slice(0, 80) }));
       let settled = false;
@@ -309,6 +318,10 @@ export class TailscaleVoiceServer {
         {
           onAudio: (pcm) => {
             if (settled) return;
+            if (pending.length === 0) {
+              firstPcmAt = Date.now() - ttsStart;
+              console.log(`[ts-voice ${board.deviceId}] first TTS PCM (+${firstPcmAt}ms)`);
+            }
             pending = Buffer.concat([pending, Buffer.from(pcm)]);
             while (pending.length >= PCM_CHUNK_BYTES) {
               this.sendPcm(board, pending.subarray(0, PCM_CHUNK_BYTES));
@@ -317,6 +330,7 @@ export class TailscaleVoiceServer {
           },
           onDone: () => {
             if (pending.length > 0) this.sendPcm(board, pending);
+            console.log(`[ts-voice ${board.deviceId}] TTS done (total ${Date.now() - ttsStart}ms, first PCM +${firstPcmAt || '—'}ms)`);
             finish();
           },
           onError: (message: string) => {
