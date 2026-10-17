@@ -1,0 +1,4 @@
+#!/bin/bash
+# pre-push — block pushes carrying credentials; first-ever push scans full history.
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+exec "$ROOT/.githooks/secret-scan.sh" push

@@ -1,0 +1,4 @@
+#!/bin/bash
+# pre-commit — block commits carrying credentials (added lines only).
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+exec "$ROOT/.githooks/secret-scan.sh" staged
