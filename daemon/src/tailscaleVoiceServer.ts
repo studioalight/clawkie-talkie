@@ -56,7 +56,11 @@ interface TsBoard {
 const DEFAULT_BOARDS: TsBoard[] = [
   {
     deviceId: '1cdbd49b9198',
-    vpnIp: process.env.TAILSCALE_ROUND_BOARD_IP ?? '100.108.153.58',
+    // RE-HOME 2026-10-18: old node 100.108.153.58 was removed from the
+    // tailnet (control plane "node not found"); the board re-registered
+    // with a fresh identity after the real auth key was baked into the
+    // firmware. New VPN IP below (stable for this identity).
+    vpnIp: process.env.TAILSCALE_ROUND_BOARD_IP ?? '100.81.53.32',
     sessionId: process.env.TS_VOICE_SESSION_ID ?? '669a3a68-f81e-4b40-b863-7a44b127a1ed',
     sessionKey:
       process.env.TS_VOICE_SESSION_KEY ?? 'agent:main:dashboard:38467751-6818-4c51-9099-6c954acd60db',
