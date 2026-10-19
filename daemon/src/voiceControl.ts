@@ -30,7 +30,7 @@ import type { DaemonPeer } from './peer.js';
 // WG board lanes: their TTS is constructed in the ts-voice server (not in
 // voice rooms), so voice/reset verbs must bridge here (field 2026-10-19:
 // Boden ok:true/applied:7 — boards still spoke default).
-import { applyBoardVoiceSettings } from './tailscaleVoiceServer.js';
+import { applyBoardVoiceSettings, applyBoardSessionSwitch } from './tailscaleVoiceServer.js';
 
 const DEFAULT_SOCKET_PATH = (process.env.HOME ?? '/tmp') + '/.clawkie-talkie/voice.sock';
 
@@ -103,8 +103,13 @@ export function startVoiceControl(peer: DaemonPeer, socketPath = process.env.CLA
         // roomId (optional) scopes to one device — multi-device rooms fan out
         // otherwise and a sibling device can swallow the switch.
         const sr = peer.requestSessionSwitch(sessionId, switchSession, switchSessionKey || undefined, switchRoomId || undefined);
-        if (!sr.ok) errors.push('session: ' + (sr.error ?? 'failed'));
-        else applied = Math.max(applied, sr.applied ?? 0);
+        // Bridge to WG board lanes too: their turns route by the board
+        // binding, not by any WebRTC room (field 2026-10-19 15:0x — board
+        // switch answered no_client while the board's WG turns were live).
+        // Error only when NEITHER surface reached anything.
+        const boardSwitched = applyBoardSessionSwitch(sessionId, switchSession, switchSessionKey || undefined, switchRoomId || undefined);
+        if (!sr.ok && boardSwitched === 0) errors.push('session: ' + (sr.error ?? 'failed'));
+        else applied = Math.max(applied, sr.ok ? sr.applied ?? 0 : 0, boardSwitched);
       }
       if (hasGain || hasAdjust) {
         const gr = peer.setTtsVolume(sessionId, {

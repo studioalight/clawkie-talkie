@@ -118,6 +118,11 @@ export class TailscaleVoiceServer {
       pendingBoardVoice = null;
       this.applyVoiceSelection(p.sessionId, p.voiceId, p.model, p.reset);
     }
+    if (pendingBoardSession) {
+      const p = pendingBoardSession;
+      pendingBoardSession = null;
+      this.applySessionSwitch(p.sessionId, p.session, p.sessionKey, p.roomId);
+    }
   }
 
   start(): void {
@@ -431,6 +436,40 @@ export class TailscaleVoiceServer {
     return targets.length;
   }
 
+  /** Voice-port bridge: session switch on a WG board lane. The board's turns
+   *  route by board.sessionId, so the switch verb must re-bind id + delivery
+   *  key + origin room TOGETHER (the key is NOT derivable from the session
+   *  id — different UUIDs; a switch without sessionKey is skipped, not
+   *  guessed). RoomId suffix (~deviceId) scopes to one device; otherwise the
+   *  from-session matches; otherwise all boards (legacy fan-out). */
+  applySessionSwitch(fromSessionId: string, session: string, sessionKey: string | undefined, roomId: string | undefined): number {
+    const suffix = roomId?.trim() ? (roomId.trim().split('~').pop() ?? '') : '';
+    const wanted = fromSessionId.trim();
+    const targets = suffix
+      ? [...this.boards.values()].filter((b) => b.deviceId === suffix)
+      : wanted
+        ? [...this.boards.values()].filter((b) => b.sessionId === wanted)
+        : [...this.boards.values()];
+    let n = 0;
+    for (const b of targets) {
+      const key = sessionKey?.trim();
+      if (!key) {
+        console.warn(`[ts-voice ${b.deviceId}] session switch to ${session.slice(0, 8)} has NO sessionKey — re-bind skipped (look up the destination key via sessions_list; it is a different UUID than the session id)`);
+        continue;
+      }
+      const prefix = b.originRoomId.includes(':') ? b.originRoomId.split(':')[0] + ':' : '';
+      b.sessionId = session;
+      b.sessionKey = key;
+      b.originRoomId = `${prefix}${session}~${b.deviceId}`;
+      console.log(`[ts-voice ${b.deviceId}] session re-bind → ${session.slice(0, 8)} (WG lane; delivery key + origin room updated)`);
+      /* Color follows the binding: the next postcard serves the new
+       * session's accent immediately instead of waiting for the interval. */
+      void this.sendSessionColor(b);
+      n++;
+    }
+    return n;
+  }
+
   private speak(board: TsBoard, text: string): Promise<void> {
     const t = this.turn(board);
     const ttsStart = Date.now();
@@ -555,12 +594,23 @@ export class TailscaleVoiceServer {
  * wiped by restarts, the same lifecycle as voice-room voice state. */
 let liveServer: TailscaleVoiceServer | null = null;
 let pendingBoardVoice: { sessionId: string; voiceId: string | null; model: string | null; reset: boolean } | null = null;
+let pendingBoardSession: { sessionId: string; session: string; sessionKey: string | undefined; roomId: string | undefined } | null = null;
 
 /** Apply voice selection to board lanes. sessionId '' = all boards; otherwise
  *  only boards whose bound session matches. Returns the boards reached. */
 export function applyBoardVoiceSettings(sessionId: string, voiceId: string | null, model: string | null, reset: boolean): number {
   if (liveServer) return liveServer.applyVoiceSelection(sessionId, voiceId, model, reset);
   pendingBoardVoice = { sessionId, voiceId, model, reset };
+  return 0;
+}
+
+/** Session-switch bridge for board lanes (field 2026-10-19 15:0x): re-bind
+ *  the board's session so its next WG turn runs in the new session. Same
+ *  semantics as applyBoardVoiceSettings; the destination sessionKey MUST be
+ *  provided by the caller (it is not derivable from the session id). */
+export function applyBoardSessionSwitch(sessionId: string, session: string, sessionKey: string | undefined, roomId: string | undefined): number {
+  if (liveServer) return liveServer.applySessionSwitch(sessionId, session, sessionKey, roomId);
+  pendingBoardSession = { sessionId, session, sessionKey, roomId };
   return 0;
 }
 
