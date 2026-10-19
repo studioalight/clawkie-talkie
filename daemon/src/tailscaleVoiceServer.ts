@@ -129,7 +129,7 @@ export class TailscaleVoiceServer {
       this.flowKeepalive();
       const timer = setInterval(() => this.flowKeepalive(), FLOW_KEEPALIVE_MS);
       timer.unref();
-      /* FIELD 13:30: unconditional session-color feed starts with the lane
+      /* FIELD 13:34: unconditional session-color feed starts with the lane
        * (no subscription state to lose across daemon restarts). */
       this.ensureSessionsInterval();
     });
@@ -294,13 +294,13 @@ export class TailscaleVoiceServer {
         return; // silence on the lane is fine; state is connectionless UDP
 
       case 'sessions.list.request':
-        void this.sendRecentSessions(board);
+        void this.sendSessionColor(board);
         return;
 
       case 'sessions.list.subscribe': {
         this.sessionsSubscribed.add(board.vpnIp);
         this.ensureSessionsInterval();
-        void this.sendRecentSessions(board);
+        void this.sendSessionColor(board);
         return;
       }
 
@@ -320,28 +320,30 @@ export class TailscaleVoiceServer {
    * breathing/plankton (never sent on the WG lane; board stayed on its
    * compiled-in fallback blue). Mirrors voiceSession.sendRecentSessions:
    * same provider, same 60s re-push interval on subscription. */
-  private async sendRecentSessions(board: TsBoard): Promise<void> {
+  private async sendSessionColor(board: TsBoard): Promise<void> {
     try {
       const snapshot = await defaultRecentSessionsCache.get();
       const ours = snapshot.sessions.find(s => s.sessionId === board.sessionId);
-      console.log(`[ts-voice ${board.deviceId}] sessions.list served: ${snapshot.sessions.length} session(s); ours=${board.sessionId.slice(0, 8)} color=${ours?.color ?? '(none set)'}`);
-      this.send(board, daemonToPhone.sessionsList(snapshot));
-    } catch {
-      console.error(`[ts-voice ${board.deviceId}] sessions.list provider failed — empty snapshot sent`);
-      this.send(board, daemonToPhone.sessionsList(createEmptyRecentSessionsSnapshot()));
+      const color = ours?.color ?? null;
+      console.log(`[ts-voice ${board.deviceId}] session.color served: ours=${board.sessionId.slice(0, 8)} color=${color ?? '(none set)'}`);
+      /* FIELD 2026-10-19 13:34 (the sessions.list payload with 10 sessions +
+       * previews is ~4KB+ — far over the 1280B tunnel MTU; it NEVER arrived,
+       * the board stayed on fallback blue while the daemon cheerfully
+       * 'served' it). The lane's contract is tiny datagrams: ~40B color
+       * postcard instead of the full catalog. */
+      this.send(board, { t: 'session.color', color });
+    } catch (err) {
+      console.error(`[ts-voice ${board.deviceId}] session.color provider failed: ${err instanceof Error ? err.message : err}`);
     }
   }
 
   private ensureSessionsInterval(): void {
     if (this.sessionsInterval) return;
     this.sessionsInterval = setInterval(() => {
-      /* FIELD 2026-10-19 13:30 (restart race: the board subscribed once on
-       * attach, but a daemon restart wipes ANY server-side subscription
-       * state — the color feed died with the dead daemon). Serve
-       * UNCONDITIONALLY to every allowlisted board: the daemon knows its
-       * boards at bind time, so restarts self-heal within one interval. */
+      /* FIELD 2026-10-19 13:30 (restart race): serve UNCONDITIONALLY to
+       * every allowlisted board — restarts self-heal within one interval. */
       for (const board of this.boards.values()) {
-        void this.sendRecentSessions(board);
+        void this.sendSessionColor(board);
       }
     }, 60_000);   /* mirrors voiceSession RECENT_SESSIONS_SUBSCRIPTION_INTERVAL_MS */
     this.sessionsInterval.unref?.();
