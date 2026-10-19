@@ -26,6 +26,8 @@ import { OpenClawInferSttSession } from './inferSttSession.js';
 import type { SttSessionLike } from './voiceSession.js';
 import { ElevenLabsTtsSession } from './elevenLabsTtsSession.js';
 import { runChat } from './chatSession.js';
+import { defaultRecentSessionsCache, createEmptyRecentSessionsSnapshot } from './recentSessions.js';   /* FIELD 2026-10-19 13:20: session color rides sessions.list — was never sent on the WG lane, board stayed on compiled-in fallback blue */
+import type { RecentSessionsSnapshot } from './protocol.js';
 
 const WG_VOICE_PORT = 9100;
 // tailscaled (userspace netstack) DROPs unsolicited inbound UDP: local
@@ -99,6 +101,10 @@ export class TailscaleVoiceServer {
   private readonly sock = createSocket('udp4');
   private readonly boards = new Map<string, TsBoard>();
   private readonly turns = new Map<string, BoardTurnState>();
+  /* FIELD 2026-10-19 13:20: boards wanting sessions.list pushes (session color
+   * for the breathing/plankton) — re-pushed on the shared model's interval. */
+  private readonly sessionsSubscribed = new Set<string>();
+  private sessionsInterval: NodeJS.Timeout | null = null;
 
   constructor(boards: TsBoard[] = DEFAULT_BOARDS) {
     for (const b of boards) this.boards.set(b.vpnIp, b);
@@ -284,11 +290,51 @@ export class TailscaleVoiceServer {
       case 'keepalive':
         return; // silence on the lane is fine; state is connectionless UDP
 
+      case 'sessions.list.request':
+        void this.sendRecentSessions(board);
+        return;
+
+      case 'sessions.list.subscribe': {
+        this.sessionsSubscribed.add(board.vpnIp);
+        this.ensureSessionsInterval();
+        void this.sendRecentSessions(board);
+        return;
+      }
+
+      case 'sessions.list.unsubscribe':
+        this.sessionsSubscribed.delete(board.vpnIp);
+        return;
+
       default:
-        // sessions.list.subscribe and friends: acknowledge minimally, lane is
-        // stateless — the board shows its session from its own persisted state.
+        // sessions.catalog / destinations / create + anything else: the WG
+        // lane serves list+color (this board's need); the rest stay
+        // rendezvous-lane features.
         return;
     }
+  }
+
+  /* FIELD 2026-10-19 13:20: sessions.list serving — session color for the
+   * breathing/plankton (never sent on the WG lane; board stayed on its
+   * compiled-in fallback blue). Mirrors voiceSession.sendRecentSessions:
+   * same provider, same 60s re-push interval on subscription. */
+  private async sendRecentSessions(board: TsBoard): Promise<void> {
+    try {
+      const snapshot = await defaultRecentSessionsCache.get();
+      this.send(board, daemonToPhone.sessionsList(snapshot));
+    } catch {
+      this.send(board, daemonToPhone.sessionsList(createEmptyRecentSessionsSnapshot()));
+    }
+  }
+
+  private ensureSessionsInterval(): void {
+    if (this.sessionsInterval) return;
+    this.sessionsInterval = setInterval(() => {
+      for (const vpnIp of this.sessionsSubscribed) {
+        const board = this.boards.get(vpnIp);
+        if (board) void this.sendRecentSessions(board);
+      }
+    }, 60_000);   /* mirrors voiceSession RECENT_SESSIONS_SUBSCRIPTION_INTERVAL_MS */
+    this.sessionsInterval.unref?.();
   }
 
   private onPcm(board: TsBoard, pcm: Buffer): void {
