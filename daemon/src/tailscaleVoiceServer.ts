@@ -87,6 +87,9 @@ interface BoardTurnState {
   sttReady: boolean;
   sttAudioDone: boolean;  // arrived before infer session ready (remote-PTT diag path)
   turnBusy: boolean;
+  turnEpoch: number;      // FIELD 2026-10-19 12:45: bumped by stt.cancel/reply.cancel —
+                          // in-flight STT onDone/chat/TTS capture this and bail (a
+                          // slide-cancel must also kill the turn the audio already fed)
   tts: ElevenLabsTtsSession | null;
   pendingPcm: Buffer[];   // arrived before the infer session was ready
   lastSeen: number;
@@ -170,7 +173,7 @@ export class TailscaleVoiceServer {
   private turn(board: TsBoard): BoardTurnState {
     let t = this.turns.get(board.vpnIp);
     if (!t) {
-      t = { stt: null, sttOpen: false, sttReady: false, sttAudioDone: false, turnBusy: false, tts: null, pendingPcm: [], lastSeen: 0 };
+      t = { stt: null, sttOpen: false, sttReady: false, sttAudioDone: false, turnBusy: false, turnEpoch: 0, tts: null, pendingPcm: [], lastSeen: 0 };
       this.turns.set(board.vpnIp, t);
     }
     t.lastSeen = Date.now();
@@ -220,8 +223,13 @@ export class TailscaleVoiceServer {
               },
               onDone: (text: string) => {
                 console.log(`[ts-voice ${board.deviceId}] STT done: "${text.slice(0, 80)}"`);
+                // FIELD 2026-10-19 12:45: epoch guard — a slide-cancel that
+                // arrived while infer was spawning (close() on a spawning
+                // session doesn't stop its pending onDone) must not respawn
+                // the turn here.
+                const epochAtDone = t.turnEpoch;
                 this.send(board, daemonToPhone.sttDone(text));
-                void this.runVoiceTurn(board, text);
+                void this.runVoiceTurn(board, text, epochAtDone);
               },
               onError: (code: string) => {
                 console.error(`[ts-voice ${board.deviceId}] STT error: ${code}`);
@@ -256,8 +264,19 @@ export class TailscaleVoiceServer {
 
       case 'stt.cancel':
       case 'reply.cancel': {
+        // FIELD 2026-10-19 12:45 (slide-cancel semantics): a cancelled turn
+        // must ALSO kill whatever the already-uplinked audio started. Bump
+        // the epoch (in-flight onDone/speak bail below), then drop the
+        // session + TTS. The turnBusy reset only matters for the case where
+        // no chat was running yet.
+        const epochAtCancel = ++t.turnEpoch;
+        console.log(`[ts-voice ${board.deviceId}] stt.cancel — turn epoch=${epochAtCancel}, dropping session${t.turnBusy ? ' (chat in flight: it will bail on the epoch guard)' : ''}`);
         if (t.stt) { try { t.stt.close(); } catch { /* ignore */ } t.stt = null; }
         if (t.tts) { try { t.tts.cancel(); } catch { /* ignore */ } t.tts = null; }
+        t.pendingPcm = [];
+        t.sttOpen = false;
+        t.sttReady = false;
+        t.sttAudioDone = false;
         t.turnBusy = false;
         return;
       }
@@ -284,8 +303,14 @@ export class TailscaleVoiceServer {
   }
 
   /** The chat half: identical shape to voiceSession.runReplyTurn, WG transport. */
-  private async runVoiceTurn(board: TsBoard, userText: string): Promise<void> {
+  private async runVoiceTurn(board: TsBoard, userText: string, epochAtCall?: number): Promise<void> {
     const t = this.turn(board);
+    // FIELD 2026-10-19 12:45: a slide-cancel between STT completion and chat
+    // start bumps the epoch — this call is for a dead turn, drop it.
+    if (epochAtCall !== undefined && epochAtCall !== t.turnEpoch) {
+      console.log(`[ts-voice ${board.deviceId}] chat dropped (cancel raced: epoch ${epochAtCall} != ${t.turnEpoch}) — "${userText.slice(0, 40)}"`);
+      return;
+    }
     if (t.turnBusy) {
       console.warn(`[ts-voice ${board.deviceId}] turn already running — dropped "${userText.slice(0, 40)}"`);
       return;
@@ -304,6 +329,12 @@ export class TailscaleVoiceServer {
         originRoomId: board.originRoomId,
         sessionKey: board.sessionKey,
       });
+      // FIELD 2026-10-19 12:45: chat finished AFTER a slide-cancel — the
+      // reply belongs to a cancelled turn; do not open TTS.
+      if (epochAtCall !== undefined && epochAtCall !== t.turnEpoch) {
+        console.log(`[ts-voice ${board.deviceId}] chat done but cancelled — epoch ${epochAtCall} != ${t.turnEpoch}; reply discarded`);
+        return;
+      }
       const replyText = result.text;
       console.log(`[ts-voice ${board.deviceId}] chat done (${Date.now() - started}ms): "${replyText.slice(0, 80)}" opening TTS`);
       this.send(board, daemonToPhone.replyDone(replyText));
