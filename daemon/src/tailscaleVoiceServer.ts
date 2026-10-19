@@ -129,6 +129,9 @@ export class TailscaleVoiceServer {
       this.flowKeepalive();
       const timer = setInterval(() => this.flowKeepalive(), FLOW_KEEPALIVE_MS);
       timer.unref();
+      /* FIELD 13:30: unconditional session-color feed starts with the lane
+       * (no subscription state to lose across daemon restarts). */
+      this.ensureSessionsInterval();
     });
     this.sock.unref();
   }
@@ -332,9 +335,13 @@ export class TailscaleVoiceServer {
   private ensureSessionsInterval(): void {
     if (this.sessionsInterval) return;
     this.sessionsInterval = setInterval(() => {
-      for (const vpnIp of this.sessionsSubscribed) {
-        const board = this.boards.get(vpnIp);
-        if (board) void this.sendRecentSessions(board);
+      /* FIELD 2026-10-19 13:30 (restart race: the board subscribed once on
+       * attach, but a daemon restart wipes ANY server-side subscription
+       * state — the color feed died with the dead daemon). Serve
+       * UNCONDITIONALLY to every allowlisted board: the daemon knows its
+       * boards at bind time, so restarts self-heal within one interval. */
+      for (const board of this.boards.values()) {
+        void this.sendRecentSessions(board);
       }
     }, 60_000);   /* mirrors voiceSession RECENT_SESSIONS_SUBSCRIPTION_INTERVAL_MS */
     this.sessionsInterval.unref?.();
