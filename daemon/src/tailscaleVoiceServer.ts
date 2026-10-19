@@ -320,8 +320,11 @@ export class TailscaleVoiceServer {
   private async sendRecentSessions(board: TsBoard): Promise<void> {
     try {
       const snapshot = await defaultRecentSessionsCache.get();
+      const ours = snapshot.sessions.find(s => s.sessionId === board.sessionId);
+      console.log(`[ts-voice ${board.deviceId}] sessions.list served: ${snapshot.sessions.length} session(s); ours=${board.sessionId.slice(0, 8)} color=${ours?.color ?? '(none set)'}`);
       this.send(board, daemonToPhone.sessionsList(snapshot));
     } catch {
+      console.error(`[ts-voice ${board.deviceId}] sessions.list provider failed — empty snapshot sent`);
       this.send(board, daemonToPhone.sessionsList(createEmptyRecentSessionsSnapshot()));
     }
   }
