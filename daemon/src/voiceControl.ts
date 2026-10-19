@@ -27,6 +27,10 @@ import { createServer, type Socket } from 'node:net';
 import { mkdirSync, existsSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { DaemonPeer } from './peer.js';
+// WG board lanes: their TTS is constructed in the ts-voice server (not in
+// voice rooms), so voice/reset verbs must bridge here (field 2026-10-19:
+// Boden ok:true/applied:7 — boards still spoke default).
+import { applyBoardVoiceSettings } from './tailscaleVoiceServer.js';
 
 const DEFAULT_SOCKET_PATH = (process.env.HOME ?? '/tmp') + '/.clawkie-talkie/voice.sock';
 
@@ -78,8 +82,13 @@ export function startVoiceControl(peer: DaemonPeer, socketPath = process.env.CLA
           ? {}
           : { tts: { providerId: 'elevenlabs', ...(model ? { model } : {}), voice: voiceId } };
         const vr = peer.applyVoiceSettings(sessionId, settings, reset);
-        if (!vr.ok) errors.push('voice: ' + (vr.error ?? 'failed'));
-        else applied = Math.max(applied, vr.applied ?? 0);
+        // Bridge the same verb to WG board lanes. Error only when NEITHER
+        // surface reached anything — rooms may legitimately be empty while
+        // boards are live, and vice versa.
+        const boardApplied = applyBoardVoiceSettings(sessionId, voiceId || null, model || null, reset);
+        const vrApplied = vr.ok ? vr.applied ?? 0 : 0;
+        applied = Math.max(applied, vrApplied, boardApplied);
+        if (!vr.ok && boardApplied === 0) errors.push('voice: ' + (vr.error ?? 'failed'));
       }
       if (switchLine) {
         // Switchboard: queue the re-home for after the current turn.

@@ -105,9 +105,19 @@ export class TailscaleVoiceServer {
    * for the breathing/plankton) — re-pushed on the shared model's interval. */
   private readonly sessionsSubscribed = new Set<string>();
   private sessionsInterval: NodeJS.Timeout | null = null;
+  /** Voice-port bridge state (field 2026-10-19): per-board TTS voice/model.
+   *  Live, non-durable — wiped by restarts, same lifecycle as voice-room
+   *  voice state; re-apply via the voice port after a restart. */
+  private readonly voiceSelections = new Map<string, { voice?: string; model?: string }>();
 
   constructor(boards: TsBoard[] = DEFAULT_BOARDS) {
     for (const b of boards) this.boards.set(b.vpnIp, b);
+    liveServer = this;
+    if (pendingBoardVoice) {
+      const p = pendingBoardVoice;
+      pendingBoardVoice = null;
+      this.applyVoiceSelection(p.sessionId, p.voiceId, p.model, p.reset);
+    }
   }
 
   start(): void {
@@ -406,6 +416,21 @@ export class TailscaleVoiceServer {
     }
   }
 
+  /** Voice-port bridge: set/reset the TTS voice a board lane speaks with.
+   *  sessionId '' = all boards; otherwise only boards bound to that session. */
+  applyVoiceSelection(sessionId: string, voiceId: string | null, model: string | null, reset: boolean): number {
+    const wanted = sessionId.trim();
+    const targets = wanted
+      ? [...this.boards.values()].filter((b) => b.sessionId === wanted)
+      : [...this.boards.values()];
+    for (const b of targets) {
+      if (reset) this.voiceSelections.delete(b.vpnIp);
+      else this.voiceSelections.set(b.vpnIp, { ...(voiceId ? { voice: voiceId } : {}), ...(model ? { model } : {}) });
+      console.log(`[ts-voice ${b.deviceId}] voice ${reset ? 'reset (daemon default)' : `-> ${voiceId}${model ? ` @ ${model}` : ''}`}`);
+    }
+    return targets.length;
+  }
+
   private speak(board: TsBoard, text: string): Promise<void> {
     const t = this.turn(board);
     const ttsStart = Date.now();
@@ -493,8 +518,13 @@ export class TailscaleVoiceServer {
       drainTimer = setInterval(drain, 37);
       drainTimer.unref?.();
       void drain();
+      const sel = this.voiceSelections.get(board.vpnIp);
       const session = new ElevenLabsTtsSession(
-        { text },
+        {
+          text,
+          ...(sel?.voice ? { voiceId: sel.voice } : {}),
+          ...(sel?.model ? { modelId: sel.model } : {}),
+        },
         {
           onAudio: (pcm) => {
             if (settled) return;
@@ -515,6 +545,23 @@ export class TailscaleVoiceServer {
       t.tts = session;
     });
   }
+}
+
+/** Voice-port bridge (FIELD 2026-10-19 14:5x): the control port's voice/reset
+ * verbs must reach the WG board lane too — speak() previously constructed
+ * ElevenLabsTtsSession with NO voice, so boards always spoke the daemon
+ * default voice while voice rooms honored the selection (field bug: Boden
+ * applied to 7 rooms with ok:true, boards still default). Live, non-durable:
+ * wiped by restarts, the same lifecycle as voice-room voice state. */
+let liveServer: TailscaleVoiceServer | null = null;
+let pendingBoardVoice: { sessionId: string; voiceId: string | null; model: string | null; reset: boolean } | null = null;
+
+/** Apply voice selection to board lanes. sessionId '' = all boards; otherwise
+ *  only boards whose bound session matches. Returns the boards reached. */
+export function applyBoardVoiceSettings(sessionId: string, voiceId: string | null, model: string | null, reset: boolean): number {
+  if (liveServer) return liveServer.applyVoiceSelection(sessionId, voiceId, model, reset);
+  pendingBoardVoice = { sessionId, voiceId, model, reset };
+  return 0;
 }
 
 let started = false;
